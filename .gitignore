@@ -8,3 +8,22 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Secrets — NUNCA commitar credenciais reais
+.env
+
+# Banco de dados local
+*.db
+*.sqlite
+*.sqlite3
+
+# Arquivos de audio temporarios gerados pelo app
+*.wav
+*.mp3
+*.ogg
+
+# Modelo Whisper baixado localmente (pode ser grande)
+models/
+
+# Logs
+*.log
