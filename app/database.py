@@ -184,6 +184,35 @@ def update_session(session_id: int, novo_trecho: str) -> None:
         )
 
 
+def overwrite_session_content(
+    session_id: int, full_text: str, update_interactions: bool = False
+) -> None:
+    """Overwrite the session content entirely.
+
+    Used when the user manually edits the text or when inserting at a specific cursor position.
+    """
+    now = datetime.now().isoformat(sep=" ", timespec="seconds")
+
+    with _connect() as conn:
+        if update_interactions:
+            conn.execute(
+                """UPDATE sessions
+                   SET conteudo_texto        = ?,
+                       quantidade_interacoes = quantidade_interacoes + 1,
+                       atualizado_em         = ?
+                   WHERE id = ?""",
+                (full_text, now, session_id),
+            )
+        else:
+            conn.execute(
+                """UPDATE sessions
+                   SET conteudo_texto = ?,
+                       atualizado_em  = ?
+                   WHERE id = ?""",
+                (full_text, now, session_id),
+            )
+
+
 def get_all_sessions() -> list[sqlite3.Row]:
     """Return all sessions ordered by most recently updated."""
     with _connect() as conn:

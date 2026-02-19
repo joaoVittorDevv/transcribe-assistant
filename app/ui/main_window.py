@@ -53,6 +53,7 @@ class MainWindow(ctk.CTk):
         self._is_recording = False
         self._record_start_time: float | None = None
         self._rms_queue: queue.Queue[float] = queue.Queue()
+        self._save_timer: str | None = None
 
         # --- Services ---
         self._recorder = AudioRecorder(on_rms_update=self._on_rms)
@@ -138,14 +139,15 @@ class MainWindow(ctk.CTk):
         ).pack(side="left")
 
     def _build_text_area(self, parent) -> None:
-        """Read-only transcription text area."""
+        """Editable transcription text area."""
         self._textbox = ctk.CTkTextbox(
             parent,
             font=("", 14),
             wrap="word",
-            state="disabled",
+            state="normal",
         )
         self._textbox.grid(row=1, column=0, sticky="nsew", pady=(0, 12))
+        self._textbox.bind("<KeyRelease>", self._on_text_change)
 
     def _build_controls(self, parent) -> None:
         """Bottom controls: timer, VU meter, record button, copy, reset."""
@@ -338,8 +340,8 @@ class MainWindow(ctk.CTk):
         if not text:
             text = "[Áudio sem conteúdo reconhecível]"
 
-        self._append_text(text)
-        self._persist_session(text)
+        self._insert_transcription(text)
+        self._persist_full_session()
         self._restore_record_button()
         self._status_label.configure(
             text="✓ Transcrição concluída", text_color="#22c55e"
@@ -367,14 +369,29 @@ class MainWindow(ctk.CTk):
     # Text area helpers
     # ==================================================================
 
-    def _append_text(self, text: str) -> None:
-        self._textbox.configure(state="normal")
-        current = self._textbox.get("1.0", "end").strip()
-        new_content = f"{current} {text}".strip() if current else text
-        self._textbox.delete("1.0", "end")
-        self._textbox.insert("1.0", new_content)
-        self._textbox.configure(state="disabled")
-        self._textbox.see("end")
+    def _insert_transcription(self, text: str) -> None:
+        """Insert new transcription text at the current cursor position."""
+        if not text:
+            return
+
+        cursor_idx = self._textbox.index("insert")
+
+        # Smart spacing: add a space if the previous character isn't a space/newline
+        # and we are not at the very beginning.
+        prefix = ""
+        if cursor_idx != "1.0":
+            prev_char = self._textbox.get(f"{cursor_idx}-1c", cursor_idx)
+            if prev_char and prev_char.strip():
+                prefix = " "
+
+        self._textbox.insert("insert", f"{prefix}{text}")
+        self._textbox.see("insert")
+
+    def _on_text_change(self, event=None) -> None:
+        """Handle manual text edits with debounced auto-save."""
+        if self._save_timer:
+            self.after_cancel(self._save_timer)
+        self._save_timer = self.after(1000, self._persist_full_session)
 
     def _get_full_text(self) -> str:
         return self._textbox.get("1.0", "end").strip()
@@ -383,28 +400,30 @@ class MainWindow(ctk.CTk):
     # Database session management
     # ==================================================================
 
-    def _persist_session(self, new_text: str) -> None:
+    def _persist_full_session(self) -> None:
+        """Save the ENTIRE text content to the database."""
+        self._save_timer = None
+        full_text = self._get_full_text()
+
         if self._current_session_id is None:
-            self._current_session_id = db.create_session(new_text)
+            if full_text:  # Only create a new session if there is text
+                self._current_session_id = db.create_session(full_text)
         else:
-            db.update_session(self._current_session_id, new_text)
+            # Update existing session (even if empty, to reflect deletions)
+            db.overwrite_session_content(self._current_session_id, full_text)
 
     def _reset_context(self) -> None:
         """Clear the text area and detach from the current session."""
         self._current_session_id = None
-        self._textbox.configure(state="normal")
         self._textbox.delete("1.0", "end")
-        self._textbox.configure(state="disabled")
         self._timer_label.configure(text="00:00")
         self._status_label.configure(text="Contexto reiniciado.", text_color="gray")
 
     def _restore_session(self, session_id: int, text: str) -> None:
         """Restore a historical session to the text area."""
         self._current_session_id = session_id
-        self._textbox.configure(state="normal")
         self._textbox.delete("1.0", "end")
         self._textbox.insert("1.0", text)
-        self._textbox.configure(state="disabled")
         self._status_label.configure(
             text="Sessão restaurada — pronto para continuar.", text_color="#22c55e"
         )
