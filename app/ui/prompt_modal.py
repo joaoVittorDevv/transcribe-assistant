@@ -33,14 +33,35 @@ class PromptModal(ctk.CTkToplevel):
         self.title("Gerenciar Prompts")
         self.geometry("720x540")
         self.resizable(False, False)
-        self.grab_set()  # Make modal
 
+        # DEBUG - REMOVE LATER
+        print("[DEBUG] PromptModal.__init__ chamado")
+
+        # Defer UI build to ensure the CTkToplevel is rendered first (Linux fix)
+        self.after(10, self._delayed_init)
+
+    # ------------------------------------------------------------------
+    # Delayed init (CTkToplevel Linux race condition fix)
+    # ------------------------------------------------------------------
+
+    def _delayed_init(self) -> None:
+        """Build UI after window is rendered. Required on Linux/X11."""
+        # DEBUG - REMOVE LATER
+        print("[DEBUG] PromptModal._delayed_init chamado — construindo UI")
         self._build_ui()
         self._load_prompt_list()
+        # grab_set after a bit more time to ensure window is "viewable"
+        self.after(150, self._safe_grab)
 
-    # ------------------------------------------------------------------
-    # UI Construction
-    # ------------------------------------------------------------------
+    def _safe_grab(self) -> None:
+        """Attempt grab_set safely, ignoring if window is not yet viewable."""
+        try:
+            self.grab_set()
+            # DEBUG - REMOVE LATER
+            print("[DEBUG] PromptModal.grab_set() bem-sucedido")
+        except Exception as exc:  # noqa: BLE001
+            # DEBUG - REMOVE LATER
+            print(f"[DEBUG] PromptModal.grab_set() falhou (ignorado): {exc}")
 
     def _build_ui(self) -> None:
         self.grid_columnconfigure(0, weight=1, minsize=220)

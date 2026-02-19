@@ -82,8 +82,16 @@ class NetworkMonitor:
                 (NETWORK_PING_HOST, NETWORK_PING_PORT),
                 timeout=_TIMEOUT_SECONDS,
             ):
+                # DEBUG - REMOVE LATER
+                print(
+                    f"[DEBUG] NetworkMonitor: conectado em {NETWORK_PING_HOST}:{NETWORK_PING_PORT} -> ONLINE"
+                )
                 return True
-        except OSError:
+        except OSError as exc:
+            # DEBUG - REMOVE LATER
+            print(
+                f"[DEBUG] NetworkMonitor: falha ao conectar em {NETWORK_PING_HOST}:{NETWORK_PING_PORT}: {exc} -> OFFLINE"
+            )
             return False
 
     def _monitor_loop(self) -> None:

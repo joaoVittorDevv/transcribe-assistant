@@ -223,6 +223,9 @@ class MainWindow(ctk.CTk):
         self._record_start_time = time.time()
         self._recorder.start_recording()
 
+        # DEBUG - REMOVE LATER
+        print("[DEBUG] MainWindow: gravacao iniciada")
+
         self._record_btn.configure(
             text="⏸  Parar",
             fg_color="#16a34a",
@@ -238,11 +241,19 @@ class MainWindow(ctk.CTk):
             text="Transcrevendo, aguarde…", text_color="#eab308"
         )
 
+        # DEBUG - REMOVE LATER
+        print("[DEBUG] MainWindow: gravacao parada, iniciando transcricao")
+
         try:
             wav_path = self._recorder.stop_recording()
         except RuntimeError as exc:
+            # DEBUG - REMOVE LATER
+            print(f"[DEBUG] MainWindow: erro ao parar gravacao: {exc}")
             self._finish_transcription_error(str(exc))
             return
+
+        # DEBUG - REMOVE LATER
+        print(f"[DEBUG] MainWindow: audio salvo em {wav_path}")
 
         # Run transcription in a background thread
         threading.Thread(
@@ -261,11 +272,28 @@ class MainWindow(ctk.CTk):
         mode_map = {"Automático": "auto", "Google": "gemini", "Whisper": "whisper"}
         mode = mode_map.get(self._mode_selector.get(), "auto")
 
+        # DEBUG - REMOVE LATER
+        print(
+            f"[DEBUG] TranscribeWorker: modo={mode} | prompt={bool(prompt_text)} | keywords={keywords}"
+        )
+
         try:
             text = self._transcriber.transcribe(wav_path, prompt_text, keywords, mode)
+            # DEBUG - REMOVE LATER
+            print(
+                f"[DEBUG] TranscribeWorker: texto recebido ({len(text)} chars): {text[:80]}..."
+            )
             _ui_queue.put(("transcription_done", text))
         except TranscriptionError as exc:
+            # DEBUG - REMOVE LATER
+            print(f"[DEBUG] TranscribeWorker: TranscriptionError: {exc}")
             _ui_queue.put(("transcription_error", str(exc)))
+        except Exception as exc:  # noqa: BLE001
+            # DEBUG - REMOVE LATER
+            print(
+                f"[DEBUG] TranscribeWorker: erro inesperado: {type(exc).__name__}: {exc}"
+            )
+            _ui_queue.put(("transcription_error", f"{type(exc).__name__}: {exc}"))
         finally:
             # Clean up the temporary WAV file
             try:
@@ -318,9 +346,11 @@ class MainWindow(ctk.CTk):
         )
 
     def _finish_transcription_error(self, message: str) -> None:
+        # DEBUG - REMOVE LATER
+        print(f"[DEBUG] MainWindow: erro de transcricao: {message}")
         self._restore_record_button()
         self._status_label.configure(
-            text=f"Erro: {message[:60]}…" if len(message) > 60 else f"Erro: {message}",
+            text=f"Erro: {message}",
             text_color="#ef4444",
         )
 

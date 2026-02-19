@@ -32,10 +32,29 @@ class HistoryWindow(ctk.CTkToplevel):
         self.title("Histórico de Sessões")
         self.geometry("680x480")
         self.resizable(True, True)
-        self.grab_set()
 
+        # DEBUG - REMOVE LATER
+        print("[DEBUG] HistoryWindow.__init__ chamado")
+
+        # Defer UI build to ensure the CTkToplevel is rendered first (Linux fix)
+        self.after(10, self._delayed_init)
+
+    def _delayed_init(self) -> None:
+        """Build UI after window is rendered. Required on Linux/X11."""
+        # DEBUG - REMOVE LATER
+        print("[DEBUG] HistoryWindow._delayed_init chamado — construindo UI")
         self._build_ui()
         self._load_sessions()
+        self.after(150, self._safe_grab)
+
+    def _safe_grab(self) -> None:
+        try:
+            self.grab_set()
+            # DEBUG - REMOVE LATER
+            print("[DEBUG] HistoryWindow.grab_set() bem-sucedido")
+        except Exception as exc:  # noqa: BLE001
+            # DEBUG - REMOVE LATER
+            print(f"[DEBUG] HistoryWindow.grab_set() falhou (ignorado): {exc}")
 
     # ------------------------------------------------------------------
     # UI Construction
