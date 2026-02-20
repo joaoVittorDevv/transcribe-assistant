@@ -15,12 +15,19 @@
         "history": "📋 Histórico",
         "record": "⏺  Gravar",
         "stop": "⏸  Parar",
+        "cancel": "✖ Cancelar",
+        "transcribe": "✔  Transcrever",
         "copy": "Copiar",
         "reset": "Resetar",
         "restore": "Restaurar",
         "save": "Salvar",
         "delete": "Excluir",
-        "add": "+"
+        "add": "+",
+        "new_tab": "+",
+        "close_tab": "✖ Fechar",
+        "rename_tab": "✎ Renomear",
+        "rename_prompt": "Novo nome da aba:",
+        "rename_title": "Renomear Sessão"
       },
       "status": {
         "processing": "Processando...",

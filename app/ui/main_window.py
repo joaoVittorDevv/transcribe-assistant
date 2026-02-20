@@ -51,11 +51,13 @@ class MainWindow(ctk.CTk):
         self.minsize(800, 500)
 
         # --- State ---
-        self._current_session_id: int | None = None
+        self._tabs_data: dict[str, dict] = {}
+        self._tab_count = 0
+        self._active_tab: str | None = None
         self._is_recording = False
         self._record_start_time: float | None = None
         self._rms_queue: queue.Queue[float] = queue.Queue()
-        self._save_timer: str | None = None
+        self._save_timers: dict[str, str | None] = {}
 
         # --- Services ---
         self._recorder = AudioRecorder(on_rms_update=self._on_rms)
@@ -159,15 +161,123 @@ class MainWindow(ctk.CTk):
         self._history_btn.pack(side="left")
 
     def _build_text_area(self, parent) -> None:
-        """Editable transcription text area."""
-        self._textbox = ctk.CTkTextbox(
-            parent,
+        """Editable transcription text area with custom tabs."""
+        wrapper = ctk.CTkFrame(parent, fg_color="transparent")
+        wrapper.grid(row=1, column=0, sticky="nsew", pady=(0, 12))
+        wrapper.grid_columnconfigure(0, weight=1)
+        wrapper.grid_rowconfigure(1, weight=1)
+
+        self._tabs_scroll = ctk.CTkScrollableFrame(
+            wrapper,
+            orientation="horizontal",
+            height=45,
+            fg_color="transparent",
+            bg_color="transparent",
+        )
+        self._tabs_scroll.grid(row=0, column=0, sticky="ew")
+
+        self._content_frame = ctk.CTkFrame(wrapper, fg_color="transparent")
+        self._content_frame.grid(row=1, column=0, sticky="nsew", pady=(6, 0))
+        self._content_frame.grid_columnconfigure(0, weight=1)
+        self._content_frame.grid_rowconfigure(0, weight=1)
+
+        self._new_tab_btn_top = ctk.CTkButton(
+            self._tabs_scroll,
+            text="+",
+            width=30,
+            height=28,
+            fg_color="gray30",
+            hover_color="gray40",
+            command=self._cmd_new_tab,
+        )
+
+        self._add_new_tab("Nova Sessão 1")
+
+    def _add_new_tab(
+        self, name: str, session_id: int | None = None, content: str = ""
+    ) -> None:
+        # Ensure name uniqueness
+        original_name = name
+        counter = 1
+        while name in self._tabs_data:
+            name = f"{original_name} ({counter})"
+            counter += 1
+
+        # Tab Button Frame
+        tab_frame = ctk.CTkFrame(self._tabs_scroll, fg_color="gray30", corner_radius=6)
+        self._new_tab_btn_top.pack_forget()
+        tab_frame.pack(side="left", padx=(0, 6), pady=4)
+
+        tab_btn = ctk.CTkButton(
+            tab_frame,
+            text=name,
+            fg_color="transparent",
+            hover_color="gray40",
+            corner_radius=6,
+            height=28,
+            command=lambda n=name: self._select_tab(n),
+        )
+        tab_btn.pack(side="left", padx=(2, 0))
+
+        tab_btn.bind("<Button-2>", lambda e, n=name: self._cmd_rename_tab(n))
+        tab_btn.bind("<Button-3>", lambda e, n=name: self._cmd_rename_tab(n))
+
+        close_btn = ctk.CTkButton(
+            tab_frame,
+            text="×",
+            width=28,
+            height=28,
+            fg_color="transparent",
+            hover_color="#ef4444",
+            corner_radius=6,
+            command=lambda n=name: self._cmd_close_tab(n),
+        )
+        close_btn.pack(side="left", padx=(0, 2))
+
+        self._new_tab_btn_top.pack(side="left", padx=(0, 4), pady=4)
+
+        textbox = ctk.CTkTextbox(
+            self._content_frame,
             font=("", 14),
             wrap="word",
             state="normal",
         )
-        self._textbox.grid(row=1, column=0, sticky="nsew", pady=(0, 12))
-        self._textbox.bind("<KeyRelease>", self._on_text_change)
+        textbox.grid(row=0, column=0, sticky="nsew", pady=0)
+        textbox.insert("1.0", content)
+        textbox.bind(
+            "<KeyRelease>", lambda event, t=name: self._on_text_change(t, event)
+        )
+
+        self._tabs_data[name] = {
+            "textbox": textbox,
+            "session_id": session_id,
+            "tab_frame": tab_frame,
+            "tab_btn": tab_btn,
+            "close_btn": close_btn,
+        }
+        self._save_timers[name] = None
+        self._select_tab(name)
+
+    def _select_tab(self, name: str) -> None:
+        if self._active_tab == name:
+            return
+
+        if self._active_tab and self._active_tab in self._tabs_data:
+            old_data = self._tabs_data[self._active_tab]
+            old_data["textbox"].grid_remove()
+            old_data["tab_frame"].configure(fg_color="gray30")
+            old_data["tab_btn"].configure(text_color="gray80")
+
+        self._active_tab = name
+        new_data = self._tabs_data[name]
+        new_data["textbox"].grid()
+        new_data["tab_frame"].configure(fg_color="#1f6aa5")
+        new_data["tab_btn"].configure(text_color="white")
+
+    def _get_active_tab_data(self) -> dict | None:
+        if self._active_tab:
+            return self._tabs_data.get(self._active_tab)
+        return None
 
     def _build_controls(self, parent) -> None:
         """Bottom controls: timer, VU meter, record button, copy, reset."""
@@ -195,7 +305,8 @@ class MainWindow(ctk.CTk):
         )
         self._status_label.grid(row=0, column=2, sticky="w")
 
-        # Column 3 is already configured with weight=1 above — no widget needed
+        # Column 3 acts as a flexible spacer between status label and buttons
+        controls.grid_columnconfigure(3, weight=1)
 
         # Action buttons (right side)
         btn_frame = ctk.CTkFrame(controls, fg_color="transparent")
@@ -211,6 +322,18 @@ class MainWindow(ctk.CTk):
             hover_color="#991b1b",
             command=self._toggle_recording,
         )
+
+        self._cancel_btn = ctk.CTkButton(
+            btn_frame,
+            text=i18n.t("ui.buttons.cancel"),
+            width=90,
+            height=42,
+            font=("", 14, "bold"),
+            fg_color="#4b5563",
+            hover_color="#374151",
+            command=self._cancel_recording,
+        )
+
         self._record_btn.pack(side="left", padx=(0, 8))
 
         self._copy_btn = ctk.CTkButton(
@@ -264,7 +387,7 @@ class MainWindow(ctk.CTk):
         self._reset_btn.configure(text=i18n.t("ui.buttons.reset"))
 
         if self._is_recording:
-            self._record_btn.configure(text=i18n.t("ui.buttons.stop"))
+            self._record_btn.configure(text=i18n.t("ui.buttons.transcribe"))
             self._status_label.configure(text=i18n.t("ui.status.recording"))
         else:
             if "Transcrevendo" in str(
@@ -310,10 +433,12 @@ class MainWindow(ctk.CTk):
         print("[DEBUG] MainWindow: gravacao iniciada")
 
         self._record_btn.configure(
-            text=i18n.t("ui.buttons.stop"),
+            text=i18n.t("ui.buttons.transcribe"),
             fg_color="#16a34a",
             hover_color="#15803d",
         )
+        self._cancel_btn.pack(side="left", padx=(0, 8), before=self._copy_btn)
+
         self._status_label.configure(
             text=i18n.t("ui.status.recording"), text_color="#22c55e"
         )
@@ -321,6 +446,8 @@ class MainWindow(ctk.CTk):
 
     def _stop_recording(self) -> None:
         self._is_recording = False
+        self._cancel_btn.pack_forget()
+
         self._record_btn.configure(
             state="disabled", text=i18n.t("ui.status.processing")
         )
@@ -343,14 +470,38 @@ class MainWindow(ctk.CTk):
         print(f"[DEBUG] MainWindow: audio salvo em {wav_path}")
 
         # Run transcription in a background thread
+        active_tab = self._active_tab
         threading.Thread(
             target=self._transcribe_worker,
-            args=(wav_path,),
+            args=(wav_path, active_tab),
             daemon=True,
             name="TranscribeWorker",
         ).start()
 
-    def _transcribe_worker(self, wav_path: Path) -> None:
+    def _cancel_recording(self) -> None:
+        self._is_recording = False
+        self._cancel_btn.pack_forget()
+
+        # DEBUG - REMOVE LATER
+        print("[DEBUG] MainWindow: gravacao cancelada")
+
+        try:
+            wav_path = self._recorder.stop_recording()
+            try:
+                wav_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        except RuntimeError:
+            pass
+
+        self._restore_record_button()
+        self._status_label.configure(
+            text=i18n.t("ui.status.context_reset"), text_color="gray"
+        )
+        self._update_timer()
+        self._timer_label.configure(text="00:00")
+
+    def _transcribe_worker(self, wav_path: Path, target_tab_name: str) -> None:
         """Run in the worker thread — posts result to the UI queue."""
         prompt_data = self._sidebar.get_active_prompt()
         prompt_text = prompt_data["texto_prompt"] if prompt_data else ""
@@ -372,10 +523,16 @@ class MainWindow(ctk.CTk):
         try:
             text = self._transcriber.transcribe(wav_path, prompt_text, keywords, mode)
             # DEBUG - REMOVE LATER
-            print(
-                f"[DEBUG] TranscribeWorker: texto recebido ({len(text)} chars): {text[:80]}..."
+            # Generate title if session is completely new for this tab
+            tab_data = self._tabs_data.get(target_tab_name)
+            generated_title = None
+            if tab_data and tab_data.get("session_id") is None:
+                # Need to generate title based on text
+                generated_title = self._transcriber.generate_title(text)
+
+            _ui_queue.put(
+                ("transcription_done", (text, target_tab_name, generated_title))
             )
-            _ui_queue.put(("transcription_done", text))
         except TranscriptionError as exc:
             # DEBUG - REMOVE LATER
             print(f"[DEBUG] TranscribeWorker: TranscriptionError: {exc}")
@@ -426,12 +583,17 @@ class MainWindow(ctk.CTk):
     # Transcription result handlers
     # ==================================================================
 
-    def _finish_transcription_ok(self, text: str) -> None:
+    def _finish_transcription_ok(self, payload: tuple[str, str, str | None]) -> None:
+        text, target_tab, new_title = payload
         if not text:
             text = i18n.t("ui.status.audio_empty")
 
-        self._insert_transcription(text)
-        self._persist_full_session()
+        self._insert_transcription(text, target_tab)
+        self._persist_full_session(target_tab)
+
+        if new_title:
+            self._rename_tab_internally(target_tab, new_title)
+
         self._restore_record_button()
         self._status_label.configure(
             text=i18n.t("ui.status.transcription_done"), text_color="#22c55e"
@@ -459,66 +621,186 @@ class MainWindow(ctk.CTk):
     # Text area helpers
     # ==================================================================
 
-    def _insert_transcription(self, text: str) -> None:
+    def _insert_transcription(self, text: str, target_tab: str | None = None) -> None:
         """Insert new transcription text at the current cursor position."""
         if not text:
             return
 
-        cursor_idx = self._textbox.index("insert")
+        tab_name = target_tab or self._active_tab
+        if not tab_name:
+            return
+        tab_data = self._tabs_data.get(tab_name)
+        if not tab_data:
+            return
+
+        textbox = tab_data["textbox"]
+        cursor_idx = textbox.index("insert")
 
         # Smart spacing: add a space if the previous character isn't a space/newline
         # and we are not at the very beginning.
         prefix = ""
         if cursor_idx != "1.0":
-            prev_char = self._textbox.get(f"{cursor_idx}-1c", cursor_idx)
+            prev_char = textbox.get(f"{cursor_idx}-1c", cursor_idx)
             if prev_char and prev_char.strip():
                 prefix = " "
 
-        self._textbox.insert("insert", f"{prefix}{text}")
-        self._textbox.see("insert")
+        textbox.insert("insert", f"{prefix}{text}")
+        textbox.see("insert")
 
-    def _on_text_change(self, event=None) -> None:
+    def _on_text_change(self, tab_name: str, event=None) -> None:
         """Handle manual text edits with debounced auto-save."""
-        if self._save_timer:
-            self.after_cancel(self._save_timer)
-        self._save_timer = self.after(1000, self._persist_full_session)
+        if self._save_timers.get(tab_name):
+            self.after_cancel(self._save_timers[tab_name])
 
-    def _get_full_text(self) -> str:
-        return self._textbox.get("1.0", "end").strip()
+        timer_id = self.after(1000, lambda t=tab_name: self._persist_full_session(t))
+        self._save_timers[tab_name] = timer_id
+
+    def _get_full_text(self, tab_name: str) -> str:
+        tab_data = self._tabs_data.get(tab_name)
+        if not tab_data:
+            return ""
+        return tab_data["textbox"].get("1.0", "end").strip()
 
     # ==================================================================
     # Database session management
     # ==================================================================
 
-    def _persist_full_session(self) -> None:
+    def _persist_full_session(self, tab_name: str | None = None) -> None:
         """Save the ENTIRE text content to the database."""
-        self._save_timer = None
-        full_text = self._get_full_text()
+        if not tab_name:
+            tab_name = self._active_tab
+        if not tab_name:
+            return
 
-        if self._current_session_id is None:
+        self._save_timers[tab_name] = None
+        full_text = self._get_full_text(tab_name)
+        tab_data = self._tabs_data.get(tab_name)
+        if not tab_data:
+            return
+
+        session_id = tab_data["session_id"]
+
+        if session_id is None:
             if full_text:  # Only create a new session if there is text
-                self._current_session_id = db.create_session(full_text)
+                new_id = db.create_session(full_text, titulo=tab_name)
+                tab_data["session_id"] = new_id
         else:
             # Update existing session (even if empty, to reflect deletions)
-            db.overwrite_session_content(self._current_session_id, full_text)
+            db.overwrite_session_content(session_id, full_text)
 
     def _reset_context(self) -> None:
         """Clear the text area and detach from the current session."""
-        self._current_session_id = None
-        self._textbox.delete("1.0", "end")
+        active_tab = self._active_tab
+        if not active_tab:
+            return
+
+        tab_data = self._tabs_data.get(active_tab)
+        if not tab_data:
+            return
+
+        tab_data["session_id"] = None
+        tab_data["textbox"].delete("1.0", "end")
+
         self._timer_label.configure(text="00:00")
         self._status_label.configure(
             text=i18n.t("ui.status.context_reset"), text_color="gray"
         )
 
     def _restore_session(self, session_id: int, text: str) -> None:
-        """Restore a historical session to the text area."""
-        self._current_session_id = session_id
-        self._textbox.delete("1.0", "end")
-        self._textbox.insert("1.0", text)
+        """Restore a historical session to a new tab."""
+        session_data = db.get_session_by_id(session_id)
+        if not session_data:
+            return
+
+        title = session_data["titulo"]
+        self._add_new_tab(name=title, session_id=session_id, content=text)
         self._status_label.configure(
             text=i18n.t("ui.status.session_restored"), text_color="#22c55e"
         )
+
+    def _cmd_new_tab(self) -> None:
+        self._tab_count += 1
+        self._add_new_tab(f"Nova Sessão {self._tab_count + 1}")
+
+    def _cmd_close_tab(self, tab_name: str | None = None) -> None:
+        if tab_name is None:
+            tab_name = self._active_tab
+        if not tab_name:
+            return
+
+        # Ensure it's persisted first
+        self._persist_full_session(tab_name)
+
+        tab_data = self._tabs_data.pop(tab_name, None)
+        self._save_timers.pop(tab_name, None)
+
+        if tab_data:
+            tab_data["tab_frame"].destroy()
+            tab_data["textbox"].destroy()
+
+        if self._active_tab == tab_name:
+            self._active_tab = None
+            if self._tabs_data:
+                # select the first available tab
+                self._select_tab(next(iter(self._tabs_data)))
+            else:
+                self._cmd_new_tab()
+
+    def _cmd_rename_tab(self, tab_name: str | None = None) -> None:
+        if tab_name is None:
+            tab_name = self._active_tab
+        if not tab_name:
+            return
+
+        # Wait for the context menu to close if it was a right click
+        self.update_idletasks()
+
+        dialog = ctk.CTkInputDialog(
+            text=i18n.t("ui.buttons.rename_prompt"),
+            title=i18n.t("ui.buttons.rename_title"),
+        )
+        new_name = dialog.get_input()
+
+        if new_name and new_name.strip() and new_name.strip() != tab_name:
+            self._rename_tab_internally(tab_name, new_name.strip())
+
+    def _rename_tab_internally(self, old_name: str, new_name: str) -> None:
+        if new_name in self._tabs_data:
+            return  # Must be unique
+
+        tab_data = self._tabs_data.pop(old_name)
+        save_timer = self._save_timers.pop(old_name, None)
+
+        session_id = tab_data["session_id"]
+
+        # We simply reconfigure the existing components instead of deleting them
+        tab_data["tab_btn"].configure(
+            text=new_name, command=lambda n=new_name: self._select_tab(n)
+        )
+        tab_data["tab_btn"].bind(
+            "<Button-2>", lambda e, n=new_name: self._cmd_rename_tab(n)
+        )
+        tab_data["tab_btn"].bind(
+            "<Button-3>", lambda e, n=new_name: self._cmd_rename_tab(n)
+        )
+        tab_data["close_btn"].configure(
+            command=lambda n=new_name: self._cmd_close_tab(n)
+        )
+
+        # Debounce timer needs the new tab name
+        tab_data["textbox"].bind(
+            "<KeyRelease>", lambda event, t=new_name: self._on_text_change(t, event)
+        )
+
+        self._tabs_data[new_name] = tab_data
+        self._save_timers[new_name] = save_timer
+
+        if self._active_tab == old_name:
+            self._active_tab = new_name
+
+        # Update db
+        if session_id is not None:
+            db.update_session_title(session_id, new_name)
 
     # ==================================================================
     # Timer
@@ -537,12 +819,17 @@ class MainWindow(ctk.CTk):
     # ==================================================================
 
     def _copy_text(self) -> None:
-        text = self._get_full_text()
+        active_tab = self._active_tab
+        if not active_tab:
+            return
+        text = self._get_full_text(active_tab)
+
         self.clipboard_clear()
-        self.clipboard_append(text)
-        self._status_label.configure(
-            text=i18n.t("ui.status.copied"), text_color="#22c55e"
-        )
+        if text:
+            self.clipboard_append(text)
+            self._status_label.configure(
+                text=i18n.t("ui.status.copied"), text_color="#22c55e"
+            )
 
     def _open_history(self) -> None:
         HistoryWindow(self, on_restore=self._restore_session)

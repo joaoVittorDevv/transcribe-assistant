@@ -15,12 +15,19 @@
                 "history": "📋 History",
                 "record": "⏺  Record",
                 "stop": "⏸  Stop",
+                "cancel": "✖ Cancel",
+                "transcribe": "✔  Transcribe",
                 "copy": "Copy",
                 "reset": "Reset",
                 "restore": "Restore",
                 "save": "Save",
                 "delete": "Delete",
-                "add": "+"
+                "add": "+",
+                "new_tab": "+",
+                "close_tab": "✖ Close",
+                "rename_tab": "✎ Rename",
+                "rename_prompt": "New tab name:",
+                "rename_title": "Rename Session"
             },
             "status": {
                 "processing": "Processing...",

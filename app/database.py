@@ -64,6 +64,7 @@ def initialize_db() -> None:
 
             CREATE TABLE IF NOT EXISTS sessions (
                 id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+                titulo                TEXT    NOT NULL DEFAULT 'Nova Sessão',
                 conteudo_texto        TEXT    NOT NULL DEFAULT '',
                 quantidade_interacoes INTEGER NOT NULL DEFAULT 0,
                 criado_em             DATETIME DEFAULT (datetime('now')),
@@ -71,6 +72,14 @@ def initialize_db() -> None:
             );
         """
         )
+
+        # Migration: Add titulo column if it doesn't exist
+        try:
+            conn.execute(
+                "ALTER TABLE sessions ADD COLUMN titulo TEXT NOT NULL DEFAULT 'Nova Sessão'"
+            )
+        except sqlite3.OperationalError:
+            pass  # Column already exists
 
 
 # ---------------------------------------------------------------------------
@@ -159,13 +168,13 @@ def replace_keywords(prompt_id: int, palavras: list[str]) -> None:
 # ---------------------------------------------------------------------------
 
 
-def create_session(conteudo_texto: str) -> int:
+def create_session(conteudo_texto: str, titulo: str = "Nova Sessão") -> int:
     """Create a new transcription session and return its id."""
     with _connect() as conn:
         cursor = conn.execute(
-            """INSERT INTO sessions (conteudo_texto, quantidade_interacoes)
-               VALUES (?, 1)""",
-            (conteudo_texto,),
+            """INSERT INTO sessions (conteudo_texto, titulo, quantidade_interacoes)
+               VALUES (?, ?, 1)""",
+            (conteudo_texto, titulo),
         )
         return cursor.lastrowid  # type: ignore[return-value]
 
@@ -227,3 +236,18 @@ def get_session_by_id(session_id: int) -> sqlite3.Row | None:
         return conn.execute(
             "SELECT * FROM sessions WHERE id = ?", (session_id,)
         ).fetchone()
+
+
+def update_session_title(session_id: int, titulo: str) -> None:
+    """Update the title of an existing session."""
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE sessions SET titulo = ? WHERE id = ?",
+            (titulo, session_id),
+        )
+
+
+def delete_session(session_id: int) -> None:
+    """Delete a session from the database."""
+    with _connect() as conn:
+        conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))

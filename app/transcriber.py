@@ -289,3 +289,35 @@ class Transcriber:
                     ) from cpu_exc
 
         return self._whisper_model
+
+    # ------------------------------------------------------------------
+    # Title Generation
+    # ------------------------------------------------------------------
+
+    def generate_title(self, text: str) -> str:
+        """Generate a short title (max 5 words) for a given text using Gemini."""
+        if not self._is_online_fn():
+            return "Nova Sessão"
+
+        try:
+            from google import genai
+            from google.genai import types
+        except ImportError:
+            return "Nova Sessão"
+
+        client = genai.Client(api_key=GOOGLE_API_KEY)
+
+        system_instruction = "Você é um assistente especialista em sumarização. Crie um título descritivo para este texto usando no máximo 5 palavras. Produza apenas o título e nada mais. Não use aspas."
+
+        try:
+            response = client.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=[text],
+                config=types.GenerateContentConfig(
+                    system_instruction=system_instruction,
+                ),
+            )
+            return response.text.strip()
+        except Exception as exc:
+            print(f"[DEBUG] Gemeni title generation failed: {exc}")
+            return "Nova Sessão"
