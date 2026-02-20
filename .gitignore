@@ -24,6 +24,7 @@ wheels/
 
 # Modelo Whisper baixado localmente (pode ser grande)
 models/
+docs/
 
 # Logs
 *.log
