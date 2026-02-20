@@ -5,6 +5,7 @@ restore a session (loading it back into the main window for further
 appending).
 """
 
+import i18n
 from typing import Callable
 
 import customtkinter as ctk
@@ -29,7 +30,7 @@ class HistoryWindow(ctk.CTkToplevel):
         super().__init__(master)
         self._on_restore = on_restore
 
-        self.title("Histórico de Sessões")
+        self.title(i18n.t("ui.history.title"))
         self.geometry("680x480")
         self.resizable(True, True)
 
@@ -39,12 +40,25 @@ class HistoryWindow(ctk.CTkToplevel):
         # Defer UI build to ensure the CTkToplevel is rendered first (Linux fix)
         self.after(10, self._delayed_init)
 
+    def refresh_labels(self) -> None:
+        self.title(i18n.t("ui.history.title"))
+        self._title_label.configure(text=i18n.t("ui.history.title"))
+        if (
+            hasattr(self, "_no_sessions_label")
+            and self._no_sessions_label.winfo_exists()
+        ):
+            self._no_sessions_label.configure(text=i18n.t("ui.history.no_sessions"))
+        # As session cards create dynamically, we'd ideally recreate them or keep references.
+        # But for full i18n correctness we can just reload sessions entirely.
+        self._load_sessions()
+
     def _delayed_init(self) -> None:
         """Build UI after window is rendered. Required on Linux/X11."""
         # DEBUG - REMOVE LATER
         print("[DEBUG] HistoryWindow._delayed_init chamado — construindo UI")
         self._build_ui()
         self._load_sessions()
+        self.refresh_labels()
         self.after(150, self._safe_grab)
 
     def _safe_grab(self) -> None:
@@ -64,11 +78,12 @@ class HistoryWindow(ctk.CTkToplevel):
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=1)
 
-        ctk.CTkLabel(
+        self._title_label = ctk.CTkLabel(
             self,
-            text="Histórico de Sessões",
+            text=i18n.t("ui.history.title"),
             font=("", 16, "bold"),
-        ).grid(row=0, column=0, padx=16, pady=(14, 6), sticky="w")
+        )
+        self._title_label.grid(row=0, column=0, padx=16, pady=(14, 6), sticky="w")
 
         self._scroll = ctk.CTkScrollableFrame(self, label_text="")
         self._scroll.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 10))
@@ -85,11 +100,12 @@ class HistoryWindow(ctk.CTkToplevel):
         sessions = db.get_all_sessions()
 
         if not sessions:
-            ctk.CTkLabel(
+            self._no_sessions_label = ctk.CTkLabel(
                 self._scroll,
-                text="Nenhuma sessão encontrada.",
+                text=i18n.t("ui.history.no_sessions"),
                 text_color="gray",
-            ).pack(pady=20)
+            )
+            self._no_sessions_label.pack(pady=20)
             return
 
         for session in sessions:
@@ -117,7 +133,9 @@ class HistoryWindow(ctk.CTkToplevel):
 
         interactions_label = ctk.CTkLabel(
             header,
-            text=f"🎙️ {session['quantidade_interacoes']} trecho(s)",
+            text=i18n.t(
+                "ui.history.interactions", count=session["quantidade_interacoes"]
+            ),
             font=("", 11),
             text_color="gray",
             anchor="e",
@@ -143,14 +161,14 @@ class HistoryWindow(ctk.CTkToplevel):
 
         ctk.CTkButton(
             btn_row,
-            text="Copiar",
+            text=i18n.t("ui.buttons.copy"),
             width=90,
             command=lambda s=session: self._copy_session(s),
         ).pack(side="left", padx=(0, 8))
 
         ctk.CTkButton(
             btn_row,
-            text="Restaurar",
+            text=i18n.t("ui.buttons.restore"),
             width=90,
             fg_color="#2563eb",
             hover_color="#1d4ed8",

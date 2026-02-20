@@ -4,14 +4,22 @@ All application configuration is read from the .env file via python-dotenv.
 Use this module as the single source of truth for runtime settings.
 """
 
-from pathlib import Path
-
-from dotenv import load_dotenv
 import os
+import i18n
+from pathlib import Path
+from dotenv import load_dotenv
 
 # Load .env from the project root (one level above this file's parent dir)
 _ROOT = Path(__file__).parent.parent
 load_dotenv(dotenv_path=_ROOT / ".env")
+
+# ---------------------------------------------------------------------------
+# i18n Initialization
+# ---------------------------------------------------------------------------
+i18n.load_path.append(str(_ROOT / "locales"))
+i18n.set("file_format", "json")
+i18n.set("filename_format", "{locale}.{format}")
+i18n.set("fallback", "pt")
 
 
 def _require(key: str) -> str:
@@ -40,6 +48,12 @@ def _optional(key: str, default: str) -> str:
 # ---------------------------------------------------------------------------
 GOOGLE_API_KEY: str = _require("GOOGLE_API_KEY")
 GEMINI_MODEL: str = _optional("GEMINI_MODEL", "gemini-2.0-flash")
+
+# ---------------------------------------------------------------------------
+# Language
+# ---------------------------------------------------------------------------
+APP_LANGUAGE: str = _optional("APP_LANGUAGE", "pt")
+i18n.set("locale", APP_LANGUAGE)
 
 # ---------------------------------------------------------------------------
 # Whisper (local inference)

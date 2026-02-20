@@ -4,6 +4,7 @@ Displays all saved prompts as a scrollable radio-button list. The
 active prompt drives the transcription context (text + glossary).
 """
 
+import i18n
 from typing import Callable
 
 import customtkinter as ctk
@@ -36,10 +37,17 @@ class Sidebar(ctk.CTkFrame):
 
         self._build_ui()
         self.refresh()
+        self.refresh_labels()
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
+
+    def refresh_labels(self) -> None:
+        self._title_label.configure(text=i18n.t("ui.sidebar.title"))
+        self._manage_btn.configure(text=i18n.t("ui.sidebar.manage_prompts"))
+        if hasattr(self, "_no_prompts_label") and self._no_prompts_label.winfo_exists():
+            self._no_prompts_label.configure(text=i18n.t("ui.sidebar.no_prompts"))
 
     def get_active_prompt(self) -> dict | None:
         """Return the currently selected prompt data or None.
@@ -75,36 +83,39 @@ class Sidebar(ctk.CTkFrame):
         self.grid_rowconfigure(1, weight=1)
         self.grid_columnconfigure(0, weight=1)
 
-        ctk.CTkLabel(
+        self._title_label = ctk.CTkLabel(
             self,
-            text="Prompt Ativo",
+            text=i18n.t("ui.sidebar.title"),
             font=("", 13, "bold"),
-        ).grid(row=0, column=0, padx=12, pady=(14, 6), sticky="w")
+        )
+        self._title_label.grid(row=0, column=0, padx=12, pady=(14, 6), sticky="w")
 
         self._scroll = ctk.CTkScrollableFrame(self, label_text="")
         self._scroll.grid(row=1, column=0, sticky="nsew", padx=6, pady=4)
         self._scroll.grid_columnconfigure(0, weight=1)
 
-        ctk.CTkButton(
+        self._manage_btn = ctk.CTkButton(
             self,
-            text="⚙  Gerenciar Prompts",
+            text=i18n.t("ui.sidebar.manage_prompts"),
             command=self._open_prompt_modal,
             fg_color="transparent",
             border_width=1,
             text_color=("gray10", "gray90"),
-        ).grid(row=2, column=0, padx=10, pady=(4, 12), sticky="ew")
+        )
+        self._manage_btn.grid(row=2, column=0, padx=10, pady=(4, 12), sticky="ew")
 
     def _render_prompt_list(self) -> None:
         for widget in self._scroll.winfo_children():
             widget.destroy()
 
         if not self._prompts:
-            ctk.CTkLabel(
+            self._no_prompts_label = ctk.CTkLabel(
                 self._scroll,
-                text="Nenhum prompt\ncadastrado.",
+                text=i18n.t("ui.sidebar.no_prompts"),
                 text_color="gray",
                 justify="center",
-            ).pack(pady=20)
+            )
+            self._no_prompts_label.pack(pady=20)
             return
 
         # Deselect if the previously selected prompt no longer exists

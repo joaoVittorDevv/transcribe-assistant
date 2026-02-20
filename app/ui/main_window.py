@@ -10,6 +10,7 @@ Threading strategy:
   - Network monitor       → daemon Thread   → callback → root.after()
 """
 
+import i18n
 import queue
 import threading
 import time
@@ -24,6 +25,7 @@ from app.transcriber import Transcriber, TranscriptionError
 from app.ui.history_window import HistoryWindow
 from app.ui.sidebar import Sidebar
 from app.ui.vu_meter import VUMeter
+
 
 # Queue used to safely post events from worker threads to the UI thread
 _ui_queue: queue.Queue = queue.Queue()
@@ -44,7 +46,7 @@ class MainWindow(ctk.CTk):
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("blue")
 
-        self.title("Assistente de Transcrição")
+        self.title(i18n.t("ui.title"))
         self.geometry("960x620")
         self.minsize(800, 500)
 
@@ -64,6 +66,7 @@ class MainWindow(ctk.CTk):
 
         # --- Build UI ---
         self._build_layout()
+        self.refresh_labels()
 
         # --- Start background services ---
         self._network_monitor.start()
@@ -108,10 +111,14 @@ class MainWindow(ctk.CTk):
         # Mode selector
         self._mode_selector = ctk.CTkSegmentedButton(
             bar,
-            values=["Automático", "Google", "Whisper"],
+            values=[
+                i18n.t("ui.modes.automatic"),
+                i18n.t("ui.modes.google"),
+                i18n.t("ui.modes.whisper"),
+            ],
             command=lambda _: None,
         )
-        self._mode_selector.set("Automático")
+        self._mode_selector.set(i18n.t("ui.modes.automatic"))
         self._mode_selector.grid(row=0, column=0, sticky="w")
 
         # Right-side status: network + history button
@@ -127,16 +134,29 @@ class MainWindow(ctk.CTk):
         self._network_dot.pack(side="left", padx=(0, 6))
 
         self._network_label = ctk.CTkLabel(
-            status_frame, text="Offline", font=("", 11), text_color="gray"
+            status_frame,
+            text=i18n.t("ui.network.offline"),
+            font=("", 11),
+            text_color="gray",
         )
         self._network_label.pack(side="left", padx=(0, 14))
 
-        ctk.CTkButton(
+        # Language Toggle Button
+        self._lang_btn = ctk.CTkSegmentedButton(
             status_frame,
-            text="📋 Histórico",
+            values=["PT", "EN"],
+            command=self._set_language,
+        )
+        self._lang_btn.set("PT" if i18n.get("locale") == "pt" else "EN")
+        self._lang_btn.pack(side="left", padx=(0, 10))
+
+        self._history_btn = ctk.CTkButton(
+            status_frame,
+            text=i18n.t("ui.buttons.history"),
             width=110,
             command=self._open_history,
-        ).pack(side="left")
+        )
+        self._history_btn.pack(side="left")
 
     def _build_text_area(self, parent) -> None:
         """Editable transcription text area."""
@@ -183,7 +203,7 @@ class MainWindow(ctk.CTk):
 
         self._record_btn = ctk.CTkButton(
             btn_frame,
-            text="⏺  Gravar",
+            text=i18n.t("ui.buttons.record"),
             width=130,
             height=42,
             font=("", 14, "bold"),
@@ -193,22 +213,83 @@ class MainWindow(ctk.CTk):
         )
         self._record_btn.pack(side="left", padx=(0, 8))
 
-        ctk.CTkButton(
+        self._copy_btn = ctk.CTkButton(
             btn_frame,
-            text="Copiar",
+            text=i18n.t("ui.buttons.copy"),
             width=90,
             command=self._copy_text,
-        ).pack(side="left", padx=(0, 8))
+        )
+        self._copy_btn.pack(side="left", padx=(0, 8))
 
-        ctk.CTkButton(
+        self._reset_btn = ctk.CTkButton(
             btn_frame,
-            text="Resetar",
+            text=i18n.t("ui.buttons.reset"),
             width=90,
             fg_color=("gray75", "gray30"),
             hover_color=("gray65", "gray20"),
             text_color=("gray10", "gray90"),
             command=self._reset_context,
-        ).pack(side="left")
+        )
+        self._reset_btn.pack(side="left")
+
+    # ==================================================================
+    # Localize (i18n)
+    # ==================================================================
+
+    def refresh_labels(self) -> None:
+        """Update all text in the UI to match the current language."""
+        self.title(i18n.t("ui.title"))
+        current_mode_idx = 0
+        try:
+            current_idx_val = self._mode_selector.get()
+            modes_pt = ["Automático", "Google", "Whisper"]
+            modes_en = ["Automatic", "Google", "Whisper"]
+            if current_idx_val in modes_pt:
+                current_mode_idx = modes_pt.index(current_idx_val)
+            elif current_idx_val in modes_en:
+                current_mode_idx = modes_en.index(current_idx_val)
+        except ValueError:
+            pass
+
+        new_modes = [
+            i18n.t("ui.modes.automatic"),
+            i18n.t("ui.modes.google"),
+            i18n.t("ui.modes.whisper"),
+        ]
+        self._mode_selector.configure(values=new_modes)
+        self._mode_selector.set(new_modes[current_mode_idx])
+
+        self._history_btn.configure(text=i18n.t("ui.buttons.history"))
+        self._copy_btn.configure(text=i18n.t("ui.buttons.copy"))
+        self._reset_btn.configure(text=i18n.t("ui.buttons.reset"))
+
+        if self._is_recording:
+            self._record_btn.configure(text=i18n.t("ui.buttons.stop"))
+            self._status_label.configure(text=i18n.t("ui.status.recording"))
+        else:
+            if "Transcrevendo" in str(
+                self._status_label.cget("text")
+            ) or "Transcribing" in str(self._status_label.cget("text")):
+                self._record_btn.configure(text=i18n.t("ui.status.processing"))
+                self._status_label.configure(text=i18n.t("ui.status.transcribing"))
+            else:
+                self._record_btn.configure(text=i18n.t("ui.buttons.record"))
+
+        if self._network_monitor.is_online:
+            self._network_label.configure(text=i18n.t("ui.network.online"))
+        else:
+            self._network_label.configure(text=i18n.t("ui.network.offline"))
+
+        self._lang_btn.set("PT" if i18n.get("locale") == "pt" else "EN")
+
+        self._sidebar.refresh_labels()
+
+    def _set_language(self, language: str) -> None:
+        """Switch language between PT and EN and refresh the UI."""
+        new_lang = "pt" if language == "PT" else "en"
+        if i18n.get("locale") != new_lang:
+            i18n.set("locale", new_lang)
+            self.refresh_labels()
 
     # ==================================================================
     # Recording flow
@@ -229,18 +310,22 @@ class MainWindow(ctk.CTk):
         print("[DEBUG] MainWindow: gravacao iniciada")
 
         self._record_btn.configure(
-            text="⏸  Parar",
+            text=i18n.t("ui.buttons.stop"),
             fg_color="#16a34a",
             hover_color="#15803d",
         )
-        self._status_label.configure(text="Gravando…", text_color="#22c55e")
+        self._status_label.configure(
+            text=i18n.t("ui.status.recording"), text_color="#22c55e"
+        )
         self._update_timer()
 
     def _stop_recording(self) -> None:
         self._is_recording = False
-        self._record_btn.configure(state="disabled", text="Processando…")
+        self._record_btn.configure(
+            state="disabled", text=i18n.t("ui.status.processing")
+        )
         self._status_label.configure(
-            text="Transcrevendo, aguarde…", text_color="#eab308"
+            text=i18n.t("ui.status.transcribing"), text_color="#eab308"
         )
 
         # DEBUG - REMOVE LATER
@@ -271,7 +356,12 @@ class MainWindow(ctk.CTk):
         prompt_text = prompt_data["texto_prompt"] if prompt_data else ""
         keywords = prompt_data["palavras_chave"] if prompt_data else []
 
-        mode_map = {"Automático": "auto", "Google": "gemini", "Whisper": "whisper"}
+        mode_map = {
+            i18n.t("ui.modes.automatic"): "auto",
+            i18n.t("ui.modes.google"): "gemini",
+            i18n.t("ui.modes.whisper"): "whisper",
+        }
+
         mode = mode_map.get(self._mode_selector.get(), "auto")
 
         # DEBUG - REMOVE LATER
@@ -338,13 +428,13 @@ class MainWindow(ctk.CTk):
 
     def _finish_transcription_ok(self, text: str) -> None:
         if not text:
-            text = "[Áudio sem conteúdo reconhecível]"
+            text = i18n.t("ui.status.audio_empty")
 
         self._insert_transcription(text)
         self._persist_full_session()
         self._restore_record_button()
         self._status_label.configure(
-            text="✓ Transcrição concluída", text_color="#22c55e"
+            text=i18n.t("ui.status.transcription_done"), text_color="#22c55e"
         )
 
     def _finish_transcription_error(self, message: str) -> None:
@@ -352,14 +442,14 @@ class MainWindow(ctk.CTk):
         print(f"[DEBUG] MainWindow: erro de transcricao: {message}")
         self._restore_record_button()
         self._status_label.configure(
-            text=f"Erro: {message}",
+            text=i18n.t("ui.status.error", message=message),
             text_color="#ef4444",
         )
 
     def _restore_record_button(self) -> None:
         self._record_btn.configure(
             state="normal",
-            text="⏺  Gravar",
+            text=i18n.t("ui.buttons.record"),
             fg_color="#dc2626",
             hover_color="#991b1b",
         )
@@ -417,7 +507,9 @@ class MainWindow(ctk.CTk):
         self._current_session_id = None
         self._textbox.delete("1.0", "end")
         self._timer_label.configure(text="00:00")
-        self._status_label.configure(text="Contexto reiniciado.", text_color="gray")
+        self._status_label.configure(
+            text=i18n.t("ui.status.context_reset"), text_color="gray"
+        )
 
     def _restore_session(self, session_id: int, text: str) -> None:
         """Restore a historical session to the text area."""
@@ -425,7 +517,7 @@ class MainWindow(ctk.CTk):
         self._textbox.delete("1.0", "end")
         self._textbox.insert("1.0", text)
         self._status_label.configure(
-            text="Sessão restaurada — pronto para continuar.", text_color="#22c55e"
+            text=i18n.t("ui.status.session_restored"), text_color="#22c55e"
         )
 
     # ==================================================================
@@ -449,7 +541,7 @@ class MainWindow(ctk.CTk):
         self.clipboard_clear()
         self.clipboard_append(text)
         self._status_label.configure(
-            text="✓ Copiado para a área de transferência.", text_color="#22c55e"
+            text=i18n.t("ui.status.copied"), text_color="#22c55e"
         )
 
     def _open_history(self) -> None:
@@ -466,10 +558,10 @@ class MainWindow(ctk.CTk):
     def _apply_network_status(self, is_online: bool) -> None:
         if is_online:
             self._network_dot.configure(text_color="#22c55e")
-            self._network_label.configure(text="Online")
+            self._network_label.configure(text=i18n.t("ui.network.online"))
         else:
             self._network_dot.configure(text_color="#ef4444")
-            self._network_label.configure(text="Offline")
+            self._network_label.configure(text=i18n.t("ui.network.offline"))
 
     # ==================================================================
     # RMS callback (called from audio thread)

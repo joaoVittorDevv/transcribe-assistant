@@ -1,0 +1,59 @@
+{
+    "en": {
+        "ui": {
+            "title": "Transcription Assistant",
+            "modes": {
+                "automatic": "Automatic",
+                "google": "Google",
+                "whisper": "Whisper"
+            },
+            "network": {
+                "offline": "Offline",
+                "online": "Online"
+            },
+            "buttons": {
+                "history": "📋 History",
+                "record": "⏺  Record",
+                "stop": "⏸  Stop",
+                "copy": "Copy",
+                "reset": "Reset",
+                "restore": "Restore",
+                "save": "Save",
+                "delete": "Delete",
+                "add": "+"
+            },
+            "status": {
+                "processing": "Processing...",
+                "transcribing": "Transcribing, please wait...",
+                "recording": "Recording...",
+                "transcription_done": "✓ Transcription complete",
+                "audio_empty": "[Audio without recognizable content]",
+                "error": "Error: %{message}",
+                "context_reset": "Context reset.",
+                "session_restored": "Session restored — ready to continue.",
+                "copied": "✓ Copied to clipboard."
+            },
+            "sidebar": {
+                "title": "Active Prompt",
+                "manage_prompts": "⚙  Manage Prompts",
+                "no_prompts": "No prompts\nregistered."
+            },
+            "history": {
+                "title": "Session History",
+                "no_sessions": "No sessions found.",
+                "interactions": "🎙️ %{count} segment(s)"
+            },
+            "prompts": {
+                "title": "Manage Prompts",
+                "list_title": "Prompts",
+                "new": "+ New Prompt",
+                "name_label": "Prompt Name",
+                "name_placeholder": "Ex: Python Developer",
+                "text_label": "Prompt Text",
+                "glossary_label": "Glossary (keywords)",
+                "add_keyword_placeholder": "Add word...",
+                "error_empty_name": "Prompt name cannot be empty."
+            }
+        }
+    }
+}

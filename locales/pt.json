@@ -1,0 +1,59 @@
+{
+  "pt": {
+    "ui": {
+      "title": "Assistente de Transcrição",
+      "modes": {
+        "automatic": "Automático",
+        "google": "Google",
+        "whisper": "Whisper"
+      },
+      "network": {
+        "offline": "Offline",
+        "online": "Online"
+      },
+      "buttons": {
+        "history": "📋 Histórico",
+        "record": "⏺  Gravar",
+        "stop": "⏸  Parar",
+        "copy": "Copiar",
+        "reset": "Resetar",
+        "restore": "Restaurar",
+        "save": "Salvar",
+        "delete": "Excluir",
+        "add": "+"
+      },
+      "status": {
+        "processing": "Processando...",
+        "transcribing": "Transcrevendo, aguarde...",
+        "recording": "Gravando...",
+        "transcription_done": "✓ Transcrição concluída",
+        "audio_empty": "[Áudio sem conteúdo reconhecível]",
+        "error": "Erro: %{message}",
+        "context_reset": "Contexto reiniciado.",
+        "session_restored": "Sessão restaurada — pronto para continuar.",
+        "copied": "✓ Copiado para a área de transferência."
+      },
+      "sidebar": {
+        "title": "Prompt Ativo",
+        "manage_prompts": "⚙  Gerenciar Prompts",
+        "no_prompts": "Nenhum prompt\ncadastrado."
+      },
+      "history": {
+        "title": "Histórico de Sessões",
+        "no_sessions": "Nenhuma sessão encontrada.",
+        "interactions": "🎙️ %{count} trecho(s)"
+      },
+      "prompts": {
+        "title": "Gerenciar Prompts",
+        "list_title": "Prompts",
+        "new": "+ Novo Prompt",
+        "name_label": "Nome do Prompt",
+        "name_placeholder": "Ex: Desenvolvedor Python",
+        "text_label": "Texto do Prompt",
+        "glossary_label": "Glossário (palavras-chave)",
+        "add_keyword_placeholder": "Adicionar palavra...",
+        "error_empty_name": "O nome do prompt não pode estar vazio."
+      }
+    }
+  }
+}

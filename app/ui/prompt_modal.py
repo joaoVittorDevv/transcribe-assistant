@@ -4,6 +4,7 @@ Opens as a CTkToplevel window. Supports creating, editing and deleting
 prompts, including management of the associated keyword/glossary list.
 """
 
+import i18n
 from typing import Callable
 
 import customtkinter as ctk
@@ -30,7 +31,7 @@ class PromptModal(ctk.CTkToplevel):
         self._selected_prompt_id: int | None = None
         self._keyword_vars: list[str] = []
 
-        self.title("Gerenciar Prompts")
+        self.title(i18n.t("ui.prompts.title"))
         self.geometry("720x540")
         self.resizable(False, False)
 
@@ -39,6 +40,27 @@ class PromptModal(ctk.CTkToplevel):
 
         # Defer UI build to ensure the CTkToplevel is rendered first (Linux fix)
         self.after(10, self._delayed_init)
+
+    def refresh_labels(self) -> None:
+        self.title(i18n.t("ui.prompts.title"))
+        self._list_title_label.configure(text=i18n.t("ui.prompts.list_title"))
+        self._new_btn.configure(text=i18n.t("ui.prompts.new"))
+
+        self._name_label.configure(text=i18n.t("ui.prompts.name_label"))
+        self._name_entry.configure(
+            placeholder_text=i18n.t("ui.prompts.name_placeholder")
+        )
+
+        self._text_label.configure(text=i18n.t("ui.prompts.text_label"))
+        self._glossary_label.configure(text=i18n.t("ui.prompts.glossary_label"))
+
+        self._keyword_entry.configure(
+            placeholder_text=i18n.t("ui.prompts.add_keyword_placeholder")
+        )
+        self._add_kw_btn.configure(text=i18n.t("ui.buttons.add"))
+
+        self._save_btn.configure(text=i18n.t("ui.buttons.save"))
+        self._delete_btn.configure(text=i18n.t("ui.buttons.delete"))
 
     # ------------------------------------------------------------------
     # Delayed init (CTkToplevel Linux race condition fix)
@@ -73,17 +95,19 @@ class PromptModal(ctk.CTkToplevel):
         left.grid(row=0, column=0, sticky="nsew", padx=(10, 5), pady=10)
         left.grid_rowconfigure(1, weight=1)
 
-        ctk.CTkLabel(left, text="Prompts", font=("", 14, "bold")).grid(
-            row=0, column=0, padx=10, pady=(10, 4), sticky="w"
+        self._list_title_label = ctk.CTkLabel(
+            left, text=i18n.t("ui.prompts.list_title"), font=("", 14, "bold")
         )
+        self._list_title_label.grid(row=0, column=0, padx=10, pady=(10, 4), sticky="w")
 
         self._prompt_listbox = ctk.CTkScrollableFrame(left, label_text="")
         self._prompt_listbox.grid(row=1, column=0, sticky="nsew", padx=6, pady=4)
         self._prompt_listbox.grid_columnconfigure(0, weight=1)
 
-        ctk.CTkButton(left, text="+ Novo Prompt", command=self._on_new).grid(
-            row=2, column=0, padx=10, pady=(4, 10), sticky="ew"
+        self._new_btn = ctk.CTkButton(
+            left, text=i18n.t("ui.prompts.new"), command=self._on_new
         )
+        self._new_btn.grid(row=2, column=0, padx=10, pady=(4, 10), sticky="ew")
 
         # ---- Right panel: form ----
         right = ctk.CTkFrame(self, corner_radius=0, fg_color="transparent")
@@ -91,37 +115,39 @@ class PromptModal(ctk.CTkToplevel):
         right.grid_rowconfigure(3, weight=1)
         right.grid_columnconfigure(0, weight=1)
 
-        ctk.CTkLabel(right, text="Nome do Prompt").grid(
-            row=0, column=0, sticky="w", pady=(0, 2)
-        )
+        self._name_label = ctk.CTkLabel(right, text=i18n.t("ui.prompts.name_label"))
+        self._name_label.grid(row=0, column=0, sticky="w", pady=(0, 2))
+
         self._name_entry = ctk.CTkEntry(
-            right, placeholder_text="Ex: Desenvolvedor Python"
+            right, placeholder_text=i18n.t("ui.prompts.name_placeholder")
         )
         self._name_entry.grid(row=1, column=0, sticky="ew", pady=(0, 10))
 
-        ctk.CTkLabel(right, text="Texto do Prompt").grid(
-            row=2, column=0, sticky="w", pady=(0, 2)
-        )
+        self._text_label = ctk.CTkLabel(right, text=i18n.t("ui.prompts.text_label"))
+        self._text_label.grid(row=2, column=0, sticky="w", pady=(0, 2))
+
         self._prompt_text = ctk.CTkTextbox(right, height=120)
         self._prompt_text.grid(row=3, column=0, sticky="nsew", pady=(0, 10))
 
-        ctk.CTkLabel(right, text="Glossário (palavras-chave)").grid(
-            row=4, column=0, sticky="w", pady=(0, 2)
+        self._glossary_label = ctk.CTkLabel(
+            right, text=i18n.t("ui.prompts.glossary_label")
         )
+        self._glossary_label.grid(row=4, column=0, sticky="w", pady=(0, 2))
 
         kw_frame = ctk.CTkFrame(right, fg_color="transparent")
         kw_frame.grid(row=5, column=0, sticky="ew", pady=(0, 6))
         kw_frame.grid_columnconfigure(0, weight=1)
 
         self._keyword_entry = ctk.CTkEntry(
-            kw_frame, placeholder_text="Adicionar palavra..."
+            kw_frame, placeholder_text=i18n.t("ui.prompts.add_keyword_placeholder")
         )
         self._keyword_entry.grid(row=0, column=0, sticky="ew", padx=(0, 6))
         self._keyword_entry.bind("<Return>", lambda _: self._add_keyword())
 
-        ctk.CTkButton(kw_frame, text="+", width=36, command=self._add_keyword).grid(
-            row=0, column=1
+        self._add_kw_btn = ctk.CTkButton(
+            kw_frame, text=i18n.t("ui.buttons.add"), width=36, command=self._add_keyword
         )
+        self._add_kw_btn.grid(row=0, column=1)
 
         self._keywords_frame = ctk.CTkScrollableFrame(right, height=80)
         self._keywords_frame.grid(row=6, column=0, sticky="ew", pady=(0, 12))
@@ -131,13 +157,14 @@ class PromptModal(ctk.CTkToplevel):
         btn_frame.grid(row=7, column=0, sticky="ew")
         btn_frame.grid_columnconfigure((0, 1), weight=1)
 
-        ctk.CTkButton(btn_frame, text="Salvar", command=self._on_save).grid(
-            row=0, column=0, padx=(0, 4), sticky="ew"
+        self._save_btn = ctk.CTkButton(
+            btn_frame, text=i18n.t("ui.buttons.save"), command=self._on_save
         )
+        self._save_btn.grid(row=0, column=0, padx=(0, 4), sticky="ew")
 
         self._delete_btn = ctk.CTkButton(
             btn_frame,
-            text="Excluir",
+            text=i18n.t("ui.buttons.delete"),
             fg_color="#ef4444",
             hover_color="#b91c1c",
             command=self._on_delete,
@@ -228,7 +255,7 @@ class PromptModal(ctk.CTkToplevel):
         texto = self._prompt_text.get("1.0", "end").strip()
 
         if not nome:
-            self._show_error("O nome do prompt não pode estar vazio.")
+            self._show_error(i18n.t("ui.prompts.error_empty_name"))
             return
 
         if self._selected_prompt_id is None:
