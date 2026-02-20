@@ -4,6 +4,13 @@ The **Transcribe Assistant** is a cross-platform desktop application built with 
 
 The primary design principle is robust resilience to connectivity drops, serving seamless transcription offline or online.
 
+## ✨ Key Features
+
+- **Hybrid Routing Network:** Smart fallback and graceful transitions between cloud processing (Gemini API) and local inferencing (faster-whisper).
+- **Multi-Tab Workspace:** Manage and isolate multiple audio transcription sessions simultaneously through an intuitive tab-based interface.
+- **Internationalization (i18n):** Built-in and extensive multilingual support for the user interface out of the box.
+- **Ongoing Recording Controls:** Active capabilities to immediately abort and discard any ongoing audio recording flow.
+
 ## 🚀 Architecture & Hybrid Routing
 
 The core engine (`app/transcriber.py`) supports 3 execution modes:
@@ -12,7 +19,7 @@ The core engine (`app/transcriber.py`) supports 3 execution modes:
 3. **Force Offline ("whisper"):** Bypasses tracking completely, triggering exclusively the `faster-whisper` ecosystem. The engine lazy-loads the transformer checkpoint, avoiding heavy VRAM allocation until inferencing is mandated. It defaults to CPU (int8) quantization if the host's CUDA toolkit misbehaves.
 
 ### Technology Stack
-- **Language & Engine:** Python 3.12+ wrapped by `uv` packaging.
+- **Language & Standards:** Python 3.12+ wrapped by `uv` packaging. Codebase styling strictly follows `black` formatting definitions.
 - **UI:** `customtkinter` (Native Performant GUIs over Tk).
 - **Offline Transcriptions:** `faster-whisper`.
 - **Cloud Transcriptions:** `google-genai`.

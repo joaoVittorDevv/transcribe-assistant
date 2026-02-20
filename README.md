@@ -4,6 +4,13 @@ O **Assistente de Transcrição** é uma aplicação desktop desenvolvida em Pyt
 
 O foco da arquitetura é fornecer transcrições contínuas, seja conectado ou totalmente offline.
 
+## ✨ Principais Funcionalidades
+
+- **Roteamento Híbrido e Resiliente:** Alternância automática ou manual entre a nuvem (Google Gemini) e processamento local (Whisper).
+- **Interface Múltiplas Abas (Tabs):** Gerencie de forma organizada inúmeras sessões de gravação e transcrição de áudio simultaneamente.
+- **Internacionalização (i18n):** Suporte integrado a múltiplos idiomas nativos abrangendo toda a interface da aplicação.
+- **Controle de Gravação:** Flexibilidade total, agora com a opção acessível de cancelar (abortar) facilmente qualquer gravação em andamento.
+
 ## 🚀 Arquitetura e Roteamento Híbrido
 
 O sistema (`app/transcriber.py`) possui 3 modos de transcrição:
@@ -12,7 +19,7 @@ O sistema (`app/transcriber.py`) possui 3 modos de transcrição:
 3. **Forçar Offline ("whisper"):** Usa exclusivamente a biblioteca `faster-whisper`. A engine carrega o modelo preguiçosamente (lazy load), alocando a VRAM apenas quando requisitada, e suporta rollback para CPU (int8) caso os drivers CUDA não estejam configurados corretamente na sua máquina.
 
 ### Stack Tecnológica
-- **Linguagem & Instalação:** Python 3.12+ empacotado via `uv`.
+- **Linguagem & Padronização:** Python 3.12+ empacotado e gerenciado via `uv`. O código-fonte é estritamente formatado com o formatador de código `black`.
 - **UI:** `customtkinter` (Interface Gráfica Nativa de Desempenho Flexível).
 - **Transcrição Local:** `faster-whisper`.
 - **Transcrição Cloud:** `google-genai`.
