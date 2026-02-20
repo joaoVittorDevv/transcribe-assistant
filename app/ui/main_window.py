@@ -26,7 +26,6 @@ from app.ui.history_window import HistoryWindow
 from app.ui.sidebar import Sidebar
 from app.ui.vu_meter import VUMeter
 
-
 # Queue used to safely post events from worker threads to the UI thread
 _ui_queue: queue.Queue = queue.Queue()
 

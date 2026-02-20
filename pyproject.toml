@@ -14,3 +14,20 @@ dependencies = [
     "sounddevice>=0.5.5",
     "soundfile>=0.13.1",
 ]
+
+[dependency-groups]
+dev = [
+    "black>=26.1.0",
+]
+
+[tool.black]
+line-length = 88
+target-version = ['py310']
+# O regex abaixo protege .agent, docs e .venv
+extend-exclude = '''
+/(
+    \.agent
+  | \.venv
+  | docs
+)/
+'''

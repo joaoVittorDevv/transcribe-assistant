@@ -16,7 +16,6 @@ from typing import Generator
 
 from app.config import DATABASE_PATH
 
-
 # ---------------------------------------------------------------------------
 # Connection helper
 # ---------------------------------------------------------------------------
@@ -46,8 +45,7 @@ def _connect() -> Generator[sqlite3.Connection, None, None]:
 def initialize_db() -> None:
     """Create all tables if they do not exist yet."""
     with _connect() as conn:
-        conn.executescript(
-            """
+        conn.executescript("""
             CREATE TABLE IF NOT EXISTS prompts (
                 id           INTEGER PRIMARY KEY AUTOINCREMENT,
                 nome         TEXT    NOT NULL,
@@ -70,8 +68,7 @@ def initialize_db() -> None:
                 criado_em             DATETIME DEFAULT (datetime('now')),
                 atualizado_em         DATETIME DEFAULT (datetime('now'))
             );
-        """
-        )
+        """)
 
         # Migration: Add titulo column if it doesn't exist
         try:
