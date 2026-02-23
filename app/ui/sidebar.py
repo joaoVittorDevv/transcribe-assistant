@@ -5,9 +5,11 @@ active prompt drives the transcription context (text + glossary).
 """
 
 import i18n
+from pathlib import Path
 from typing import Callable
 
 import customtkinter as ctk
+from PIL import Image
 
 import app.database as db
 from app.ui.prompt_modal import PromptModal
@@ -83,12 +85,30 @@ class Sidebar(ctk.CTkFrame):
         self.grid_rowconfigure(1, weight=1)
         self.grid_columnconfigure(0, weight=1)
 
+        # Header: logo + title side by side
+        header = ctk.CTkFrame(self, fg_color="transparent")
+        header.grid(row=0, column=0, padx=12, pady=(14, 6), sticky="ew")
+
+        icon_path = (
+            Path(__file__).resolve().parent.parent.parent
+            / "assets"
+            / "assist_transcribe_1x1.png"
+        )
+        if icon_path.exists():
+            self._logo_image = ctk.CTkImage(
+                light_image=Image.open(icon_path),
+                dark_image=Image.open(icon_path),
+                size=(28, 28),
+            )
+            logo_label = ctk.CTkLabel(header, image=self._logo_image, text="")
+            logo_label.pack(side="left", padx=(0, 8))
+
         self._title_label = ctk.CTkLabel(
-            self,
+            header,
             text=i18n.t("ui.sidebar.title"),
             font=("", 13, "bold"),
         )
-        self._title_label.grid(row=0, column=0, padx=12, pady=(14, 6), sticky="w")
+        self._title_label.pack(side="left")
 
         self._scroll = ctk.CTkScrollableFrame(self, label_text="")
         self._scroll.grid(row=1, column=0, sticky="nsew", padx=6, pady=4)

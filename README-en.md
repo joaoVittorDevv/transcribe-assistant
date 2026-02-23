@@ -1,4 +1,8 @@
-# Transcribe Assistant
+<p align="center">
+  <img src="assets/assist_transcribe_1x1.png" alt="Transcribe Assistant Logo" width="120" />
+</p>
+
+<h1 align="center">Transcribe Assistant</h1>
 
 The **Transcribe Assistant** is a cross-platform desktop application built with Python (CustomTkinter) engineered to optimize audio annotation pipelines. It relies on a distinct hybrid routing engine that falls back gracefully between local, privacy-centric AI models utilizing GPU/CPU (`faster-whisper`), and robust cloud endpoints via Google Gemini.
 

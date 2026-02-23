@@ -1,4 +1,8 @@
-# Assistente de Transcrição
+<p align="center">
+  <img src="assets/assist_transcribe_1x1.png" alt="Assistente de Transcrição Logo" width="120" />
+</p>
+
+<h1 align="center">Assistente de Transcrição</h1>
 
 O **Assistente de Transcrição** é uma aplicação desktop desenvolvida em Python (CustomTkinter) projetada para otimizar fluxos de anotação de áudio. Ela utiliza um roteador híbrido e inteligente de transcrição que mescla modelos leves em execução local via GPU/CPU com as capacidades de nuvem da API do Google Gemini.
 

@@ -17,6 +17,7 @@ import time
 from pathlib import Path
 
 import customtkinter as ctk
+from PIL import Image, ImageTk
 
 import app.database as db
 from app.audio_recorder import AudioRecorder
@@ -40,7 +41,7 @@ class MainWindow(ctk.CTk):
     """Main application window for the Transcription Assistant."""
 
     def __init__(self) -> None:
-        super().__init__()
+        super().__init__(className="transcribe-assistant")
 
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("blue")
@@ -48,6 +49,21 @@ class MainWindow(ctk.CTk):
         self.title(i18n.t("ui.title"))
         self.geometry("960x620")
         self.minsize(800, 500)
+
+        # --- Window Icon (taskbar + alt+tab) ---
+        self._icon_photos: list[ImageTk.PhotoImage] = []
+        icon_path = (
+            Path(__file__).resolve().parent.parent.parent
+            / "assets"
+            / "assist_transcribe_1x1.png"
+        )
+        if icon_path.exists():
+            icon_pil = Image.open(icon_path)
+            for size in (16, 32, 48, 64, 128):
+                resized = icon_pil.resize((size, size), Image.LANCZOS)
+                self._icon_photos.append(ImageTk.PhotoImage(resized))
+            self.iconphoto(True, *self._icon_photos)
+            self.after(200, lambda: self.iconphoto(True, *self._icon_photos))
 
         # --- State ---
         self._tabs_data: dict[str, dict] = {}
