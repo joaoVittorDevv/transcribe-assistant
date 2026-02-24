@@ -19,6 +19,7 @@
         "transcribe": "✔  Transcrever",
         "copy": "Copiar",
         "reset": "Resetar",
+        "import_audio": "Importar áudio",
         "restore": "Restaurar",
         "save": "Salvar",
         "delete": "Excluir",
@@ -38,7 +39,11 @@
         "error": "Erro: %{message}",
         "context_reset": "Contexto reiniciado.",
         "session_restored": "Sessão restaurada — pronto para continuar.",
-        "copied": "✓ Copiado para a área de transferência."
+        "copied": "✓ Copiado para a área de transferência.",
+        "validating_audio": "Validando áudio...",
+        "audio_rejected": "Áudio rejeitado: %{reason}",
+        "audio_accepted": "Áudio aceito — transcrevendo...",
+        "import_error": "Erro ao importar: %{message}"
       },
       "sidebar": {
         "title": "Prompt Ativo",
@@ -60,6 +65,10 @@
         "glossary_label": "Glossário (palavras-chave)",
         "add_keyword_placeholder": "Adicionar palavra...",
         "error_empty_name": "O nome do prompt não pode estar vazio."
+      },
+      "file_dialog": {
+        "title": "Selecionar arquivo de áudio",
+        "audio_files": "Arquivos de áudio"
       }
     }
   }
