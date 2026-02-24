@@ -15,7 +15,6 @@ import queue
 import threading
 import time
 from pathlib import Path
-from tkinter import filedialog
 
 import customtkinter as ctk
 from PIL import Image, ImageTk
@@ -24,12 +23,13 @@ import app.database as db
 from app.audio_recorder import AudioRecorder
 from app.audio_validator import (
     AudioValidator,
-    get_file_dialog_filetypes,
+    SUPPORTED_AUDIO_EXTENSIONS,
     is_supported_format,
 )
 from app.network_monitor import NetworkMonitor
 from app.transcriber import Transcriber, TranscriptionError
 from app.ui.history_window import HistoryWindow
+from app.ui.native_dialog import open_audio_file
 from app.ui.sidebar import Sidebar
 from app.ui.vu_meter import VUMeter
 
@@ -910,10 +910,10 @@ class MainWindow(ctk.CTk):
         if self._is_recording:
             return  # Don't import while recording
 
-        filetypes = get_file_dialog_filetypes()
-        file_path = filedialog.askopenfilename(
+        file_path = open_audio_file(
             title=i18n.t("ui.file_dialog.title"),
-            filetypes=filetypes,
+            extensions=SUPPORTED_AUDIO_EXTENSIONS,
+            filetypes_label=i18n.t("ui.file_dialog.audio_files"),
         )
 
         if not file_path:
