@@ -15,12 +15,18 @@ import queue
 import threading
 import time
 from pathlib import Path
+from tkinter import filedialog
 
 import customtkinter as ctk
 from PIL import Image, ImageTk
 
 import app.database as db
 from app.audio_recorder import AudioRecorder
+from app.audio_validator import (
+    AudioValidator,
+    get_file_dialog_filetypes,
+    is_supported_format,
+)
 from app.network_monitor import NetworkMonitor
 from app.transcriber import Transcriber, TranscriptionError
 from app.ui.history_window import HistoryWindow
@@ -78,6 +84,9 @@ class MainWindow(ctk.CTk):
         self._recorder = AudioRecorder(on_rms_update=self._on_rms)
         self._network_monitor = NetworkMonitor(on_status_change=self._on_network_change)
         self._transcriber = Transcriber(
+            is_online_fn=lambda: self._network_monitor.is_online
+        )
+        self._audio_validator = AudioValidator(
             is_online_fn=lambda: self._network_monitor.is_online
         )
 
@@ -166,6 +175,26 @@ class MainWindow(ctk.CTk):
         )
         self._lang_btn.set("PT" if i18n.get("locale") == "pt" else "EN")
         self._lang_btn.pack(side="left", padx=(0, 10))
+
+        # Import audio icon button (discrete, no label)
+        self._import_btn = ctk.CTkButton(
+            status_frame,
+            text="📂",
+            width=36,
+            height=36,
+            font=("", 16),
+            fg_color="transparent",
+            hover_color=("gray75", "gray30"),
+            corner_radius=8,
+            command=self._import_audio_file,
+        )
+        self._import_btn.pack(side="left", padx=(0, 6))
+
+        # Tooltip for import button
+        self._import_tooltip = _Tooltip(
+            self._import_btn,
+            text_fn=lambda: i18n.t("ui.buttons.import_audio"),
+        )
 
         self._history_btn = ctk.CTkButton(
             status_frame,
@@ -516,7 +545,9 @@ class MainWindow(ctk.CTk):
         self._update_timer()
         self._timer_label.configure(text="00:00")
 
-    def _transcribe_worker(self, wav_path: Path, target_tab_name: str) -> None:
+    def _transcribe_worker(
+        self, wav_path: Path, target_tab_name: str, is_imported: bool = False
+    ) -> None:
         """Run in the worker thread — posts result to the UI queue."""
         prompt_data = self._sidebar.get_active_prompt()
         prompt_text = prompt_data["texto_prompt"] if prompt_data else ""
@@ -532,17 +563,15 @@ class MainWindow(ctk.CTk):
 
         # DEBUG - REMOVE LATER
         print(
-            f"[DEBUG] TranscribeWorker: modo={mode} | prompt={bool(prompt_text)} | keywords={keywords}"
+            f"[DEBUG] TranscribeWorker: modo={mode} | prompt={bool(prompt_text)} | keywords={keywords} | imported={is_imported}"
         )
 
         try:
             text = self._transcriber.transcribe(wav_path, prompt_text, keywords, mode)
-            # DEBUG - REMOVE LATER
             # Generate title if session is completely new for this tab
             tab_data = self._tabs_data.get(target_tab_name)
             generated_title = None
             if tab_data and tab_data.get("session_id") is None:
-                # Need to generate title based on text
                 generated_title = self._transcriber.generate_title(text)
 
             _ui_queue.put(
@@ -559,11 +588,12 @@ class MainWindow(ctk.CTk):
             )
             _ui_queue.put(("transcription_error", f"{type(exc).__name__}: {exc}"))
         finally:
-            # Clean up the temporary WAV file
-            try:
-                wav_path.unlink(missing_ok=True)
-            except OSError:
-                pass
+            # Only delete temporary files from mic recordings, not imported files
+            if not is_imported:
+                try:
+                    wav_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
 
     # ==================================================================
     # UI event queue (thread-safe UI updates)
@@ -580,6 +610,10 @@ class MainWindow(ctk.CTk):
                     self._finish_transcription_error(payload)
                 elif event == "network_change":
                     self._apply_network_status(payload)
+                elif event == "import_rejected":
+                    self._finish_import_rejected(payload)
+                elif event == "import_accepted":
+                    self._finish_import_accepted()
         except queue.Empty:
             pass
         self.after(_POLL_MS, self._poll_ui_queue)
@@ -630,7 +664,25 @@ class MainWindow(ctk.CTk):
             fg_color="#dc2626",
             hover_color="#991b1b",
         )
+        self._import_btn.configure(state="normal")
         self._vu_meter.set_level(0.0)
+
+    def _finish_import_rejected(self, reason: str) -> None:
+        """Handle rejected audio import."""
+        self._restore_record_button()
+        self._status_label.configure(
+            text=i18n.t("ui.status.audio_rejected", reason=reason),
+            text_color="#ef4444",
+        )
+
+    def _finish_import_accepted(self) -> None:
+        """Handle accepted audio import — transcription starts."""
+        self._status_label.configure(
+            text=i18n.t("ui.status.audio_accepted"), text_color="#eab308"
+        )
+        self._record_btn.configure(
+            state="disabled", text=i18n.t("ui.status.processing")
+        )
 
     # ==================================================================
     # Text area helpers
@@ -850,6 +902,77 @@ class MainWindow(ctk.CTk):
         HistoryWindow(self, on_restore=self._restore_session)
 
     # ==================================================================
+    # Audio file import
+    # ==================================================================
+
+    def _import_audio_file(self) -> None:
+        """Open file dialog to select an audio file for transcription."""
+        if self._is_recording:
+            return  # Don't import while recording
+
+        filetypes = get_file_dialog_filetypes()
+        file_path = filedialog.askopenfilename(
+            title=i18n.t("ui.file_dialog.title"),
+            filetypes=filetypes,
+        )
+
+        if not file_path:
+            return  # User cancelled
+
+        audio_path = Path(file_path)
+
+        if not is_supported_format(audio_path):
+            self._status_label.configure(
+                text=i18n.t(
+                    "ui.status.audio_rejected",
+                    reason=f"Formato não suportado: {audio_path.suffix}",
+                ),
+                text_color="#ef4444",
+            )
+            return
+
+        # Disable controls during import
+        self._record_btn.configure(state="disabled")
+        self._import_btn.configure(state="disabled")
+        self._status_label.configure(
+            text=i18n.t("ui.status.validating_audio"), text_color="#eab308"
+        )
+
+        active_tab = self._active_tab
+        threading.Thread(
+            target=self._import_worker,
+            args=(audio_path, active_tab),
+            daemon=True,
+            name="ImportWorker",
+        ).start()
+
+    def _import_worker(self, audio_path: Path, target_tab_name: str) -> None:
+        """Validate and transcribe an imported audio file (runs in thread)."""
+        try:
+            result = self._audio_validator.validate(audio_path)
+            print(
+                f"[DEBUG] ImportWorker: validation={result.is_valid} "
+                f"confidence={result.confidence} reason={result.reason}"
+            )
+
+            if not result.is_valid:
+                _ui_queue.put(
+                    (
+                        "import_rejected",
+                        result.reason,
+                    )
+                )
+                return
+
+            # Validation passed — post acceptance and start transcription
+            _ui_queue.put(("import_accepted", None))
+            self._transcribe_worker(audio_path, target_tab_name, is_imported=True)
+
+        except Exception as exc:  # noqa: BLE001
+            print(f"[DEBUG] ImportWorker: erro: {exc}")
+            _ui_queue.put(("transcription_error", f"Import error: {exc}"))
+
+    # ==================================================================
     # Network status
     # ==================================================================
 
@@ -885,3 +1008,81 @@ class MainWindow(ctk.CTk):
             self._recorder.stop_recording()
         self._network_monitor.stop()
         self.destroy()
+
+
+# ======================================================================
+# Tooltip helper (no external dependencies)
+# ======================================================================
+
+
+class _Tooltip:
+    """Lightweight tooltip that appears on hover after a short delay.
+
+    Args:
+        widget:  The widget to attach the tooltip to.
+        text_fn: A callable returning the tooltip text (supports i18n).
+        delay:   Milliseconds before the tooltip appears.
+    """
+
+    _DELAY_MS = 500
+    _PAD_X = 8
+    _PAD_Y = 4
+
+    def __init__(
+        self,
+        widget: ctk.CTkBaseClass,
+        text_fn: callable,
+        delay: int = _DELAY_MS,
+    ) -> None:
+        self._widget = widget
+        self._text_fn = text_fn
+        self._delay = delay
+        self._tip_window: ctk.CTkToplevel | None = None
+        self._after_id: str | None = None
+
+        widget.bind("<Enter>", self._on_enter)
+        widget.bind("<Leave>", self._on_leave)
+
+    def _on_enter(self, _event=None) -> None:
+        self._cancel()
+        self._after_id = self._widget.after(self._delay, self._show)
+
+    def _on_leave(self, _event=None) -> None:
+        self._cancel()
+        self._hide()
+
+    def _cancel(self) -> None:
+        if self._after_id:
+            self._widget.after_cancel(self._after_id)
+            self._after_id = None
+
+    def _show(self) -> None:
+        if self._tip_window:
+            return
+
+        x = self._widget.winfo_rootx()
+        y = self._widget.winfo_rooty() + self._widget.winfo_height() + 4
+
+        self._tip_window = tw = ctk.CTkToplevel(self._widget)
+        tw.withdraw()
+        tw.overrideredirect(True)
+
+        label = ctk.CTkLabel(
+            tw,
+            text=self._text_fn(),
+            font=("", 11),
+            fg_color=("gray85", "gray20"),
+            corner_radius=6,
+            padx=self._PAD_X,
+            pady=self._PAD_Y,
+        )
+        label.pack()
+
+        tw.update_idletasks()
+        tw.geometry(f"+{x}+{y}")
+        tw.deiconify()
+
+    def _hide(self) -> None:
+        if self._tip_window:
+            self._tip_window.destroy()
+            self._tip_window = None
