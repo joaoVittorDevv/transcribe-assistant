@@ -19,6 +19,7 @@
                 "transcribe": "✔  Transcribe",
                 "copy": "Copy",
                 "reset": "Reset",
+                "import_audio": "Import audio",
                 "restore": "Restore",
                 "save": "Save",
                 "delete": "Delete",
@@ -38,7 +39,11 @@
                 "error": "Error: %{message}",
                 "context_reset": "Context reset.",
                 "session_restored": "Session restored — ready to continue.",
-                "copied": "✓ Copied to clipboard."
+                "copied": "✓ Copied to clipboard.",
+                "validating_audio": "Validating audio...",
+                "audio_rejected": "Audio rejected: %{reason}",
+                "audio_accepted": "Audio accepted — transcribing...",
+                "import_error": "Import error: %{message}"
             },
             "sidebar": {
                 "title": "Active Prompt",
@@ -60,6 +65,10 @@
                 "glossary_label": "Glossary (keywords)",
                 "add_keyword_placeholder": "Add word...",
                 "error_empty_name": "Prompt name cannot be empty."
+            },
+            "file_dialog": {
+                "title": "Select audio file",
+                "audio_files": "Audio files"
             }
         }
     }
