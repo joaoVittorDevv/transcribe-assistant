@@ -30,6 +30,7 @@ class PromptModal(ctk.CTkToplevel):
         self._on_changed = on_changed
         self._selected_prompt_id: int | None = None
         self._keyword_vars: list[str] = []
+        self._is_default_var = ctk.BooleanVar(value=False)
 
         self.title(i18n.t("ui.prompts.title"))
         self.geometry("720x540")
@@ -58,6 +59,9 @@ class PromptModal(ctk.CTkToplevel):
             placeholder_text=i18n.t("ui.prompts.add_keyword_placeholder")
         )
         self._add_kw_btn.configure(text=i18n.t("ui.buttons.add"))
+
+        if hasattr(self, "_is_default_switch"):
+            self._is_default_switch.configure(text="Definir como Padrão")
 
         self._save_btn.configure(text=i18n.t("ui.buttons.save"))
         self._delete_btn.configure(text=i18n.t("ui.buttons.delete"))
@@ -152,9 +156,23 @@ class PromptModal(ctk.CTkToplevel):
         self._keywords_frame = ctk.CTkScrollableFrame(right, height=80)
         self._keywords_frame.grid(row=6, column=0, sticky="ew", pady=(0, 12))
 
-        # Action buttons
-        btn_frame = ctk.CTkFrame(right, fg_color="transparent")
-        btn_frame.grid(row=7, column=0, sticky="ew")
+        # Actions and Switch
+        bottom_frame = ctk.CTkFrame(right, fg_color="transparent")
+        bottom_frame.grid(row=7, column=0, sticky="ew")
+        bottom_frame.grid_columnconfigure(0, weight=1)
+        bottom_frame.grid_columnconfigure(1, weight=1)
+
+        self._is_default_switch = ctk.CTkSwitch(
+            bottom_frame,
+            text="Definir como Padrão",
+            variable=self._is_default_var,
+        )
+        self._is_default_switch.grid(
+            row=0, column=0, columnspan=2, pady=(0, 10), sticky="w"
+        )
+
+        btn_frame = ctk.CTkFrame(bottom_frame, fg_color="transparent")
+        btn_frame.grid(row=1, column=0, columnspan=2, sticky="ew")
         btn_frame.grid_columnconfigure((0, 1), weight=1)
 
         self._save_btn = ctk.CTkButton(
@@ -202,6 +220,14 @@ class PromptModal(ctk.CTkToplevel):
         self._prompt_text.delete("1.0", "end")
         self._prompt_text.insert("1.0", prompt["texto_prompt"])
 
+        # Load default state
+        # the db might not have is_default if migration wasn't done, but default to 0
+        try:
+            is_default = prompt["is_default"]
+        except IndexError:
+            is_default = 0
+        self._is_default_var.set(bool(is_default))
+
         # Load keywords
         rows = db.get_keywords_by_prompt(prompt["id"])
         self._keyword_vars = [row["palavra"] for row in rows]
@@ -226,9 +252,13 @@ class PromptModal(ctk.CTkToplevel):
         for widget in self._keywords_frame.winfo_children():
             widget.destroy()
 
+        row = 0
+        col = 0
+        max_cols = 3
+
         for word in self._keyword_vars:
             tag = ctk.CTkFrame(self._keywords_frame, fg_color=("gray80", "gray30"))
-            tag.pack(side="left", padx=3, pady=3)
+            tag.grid(row=row, column=col, padx=3, pady=3, sticky="w")
             ctk.CTkLabel(tag, text=word, padx=6).pack(side="left")
             ctk.CTkButton(
                 tag,
@@ -237,6 +267,11 @@ class PromptModal(ctk.CTkToplevel):
                 fg_color="transparent",
                 command=lambda w=word: self._remove_keyword(w),
             ).pack(side="left")
+
+            col += 1
+            if col >= max_cols:
+                col = 0
+                row += 1
 
     # ------------------------------------------------------------------
     # CRUD actions
@@ -247,6 +282,7 @@ class PromptModal(ctk.CTkToplevel):
         self._delete_btn.configure(state="disabled")
         self._name_entry.delete(0, "end")
         self._prompt_text.delete("1.0", "end")
+        self._is_default_var.set(False)
         self._keyword_vars = []
         self._render_keywords()
 
@@ -258,11 +294,28 @@ class PromptModal(ctk.CTkToplevel):
             self._show_error(i18n.t("ui.prompts.error_empty_name"))
             return
 
+        is_default = self._is_default_var.get()
+
+        if is_default:
+            # Check if there's already a default prompt
+            current_default = db.get_default_prompt()
+            # If current_default exists and it's not the one we are editing
+            if current_default and current_default["id"] != self._selected_prompt_id:
+                # Assuming NativeDialog provides a confirm method
+                from app.ui.native_dialog import NativeDialog
+
+                if not NativeDialog.confirm(
+                    self,
+                    title="Aviso",
+                    message=f"O prompt '{current_default['nome']}' já é o padrão. Substituir?",
+                ):
+                    return
+
         if self._selected_prompt_id is None:
-            pid = db.create_prompt(nome, texto)
+            pid = db.create_prompt(nome, texto, is_default)
         else:
             pid = self._selected_prompt_id
-            db.update_prompt(pid, nome, texto)
+            db.update_prompt(pid, nome, texto, is_default)
 
         db.replace_keywords(pid, self._keyword_vars)
         self._selected_prompt_id = pid
