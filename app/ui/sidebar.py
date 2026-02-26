@@ -141,12 +141,27 @@ class Sidebar(ctk.CTkFrame):
         # Deselect if the previously selected prompt no longer exists
         ids = {p["id"] for p in self._prompts}
         if self._selected_var.get() not in ids:
-            self._selected_var.set(-1)
+            default_prompt = db.get_default_prompt()
+            if default_prompt and default_prompt["id"] in ids:
+                self._selected_var.set(default_prompt["id"])
+                if self._on_prompt_changed:
+                    self._on_prompt_changed()
+            else:
+                self._selected_var.set(-1)
 
         for prompt in self._prompts:
+            radio_text = prompt["nome"]
+            try:
+                is_default = prompt["is_default"]
+            except IndexError:
+                is_default = 0
+
+            if is_default:
+                radio_text += " (Padrão)"
+
             radio = ctk.CTkRadioButton(
                 self._scroll,
-                text=prompt["nome"],
+                text=radio_text,
                 variable=self._selected_var,
                 value=prompt["id"],
                 command=self._on_radio_changed,

@@ -45,11 +45,13 @@ def _connect() -> Generator[sqlite3.Connection, None, None]:
 def initialize_db() -> None:
     """Create all tables if they do not exist yet."""
     with _connect() as conn:
-        conn.executescript("""
+        conn.executescript(
+            """
             CREATE TABLE IF NOT EXISTS prompts (
                 id           INTEGER PRIMARY KEY AUTOINCREMENT,
                 nome         TEXT    NOT NULL,
                 texto_prompt TEXT    NOT NULL DEFAULT '',
+                is_default   BOOLEAN DEFAULT 0,
                 criado_em    DATETIME DEFAULT (datetime('now'))
             );
 
@@ -68,7 +70,8 @@ def initialize_db() -> None:
                 criado_em             DATETIME DEFAULT (datetime('now')),
                 atualizado_em         DATETIME DEFAULT (datetime('now'))
             );
-        """)
+        """
+        )
 
         # Migration: Add titulo column if it doesn't exist
         try:
@@ -78,18 +81,27 @@ def initialize_db() -> None:
         except sqlite3.OperationalError:
             pass  # Column already exists
 
+        # Migration: Add is_default column to prompts if it doesn't exist
+        try:
+            conn.execute("ALTER TABLE prompts ADD COLUMN is_default BOOLEAN DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass  # Column already exists
+
 
 # ---------------------------------------------------------------------------
 # Prompts CRUD
 # ---------------------------------------------------------------------------
 
 
-def create_prompt(nome: str, texto_prompt: str) -> int:
+def create_prompt(nome: str, texto_prompt: str, is_default: bool = False) -> int:
     """Insert a new prompt and return its id."""
     with _connect() as conn:
+        if is_default:
+            conn.execute("UPDATE prompts SET is_default = 0")
+
         cursor = conn.execute(
-            "INSERT INTO prompts (nome, texto_prompt) VALUES (?, ?)",
-            (nome, texto_prompt),
+            "INSERT INTO prompts (nome, texto_prompt, is_default) VALUES (?, ?, ?)",
+            (nome, texto_prompt, is_default),
         )
         return cursor.lastrowid  # type: ignore[return-value]
 
@@ -108,13 +120,28 @@ def get_prompt_by_id(prompt_id: int) -> sqlite3.Row | None:
         ).fetchone()
 
 
-def update_prompt(prompt_id: int, nome: str, texto_prompt: str) -> None:
-    """Update nome and texto_prompt of an existing prompt."""
+def update_prompt(
+    prompt_id: int, nome: str, texto_prompt: str, is_default: bool = False
+) -> None:
+    """Update nome, texto_prompt, and is_default of an existing prompt."""
     with _connect() as conn:
+        if is_default:
+            conn.execute(
+                "UPDATE prompts SET is_default = 0 WHERE id != ?", (prompt_id,)
+            )
+
         conn.execute(
-            "UPDATE prompts SET nome = ?, texto_prompt = ? WHERE id = ?",
-            (nome, texto_prompt, prompt_id),
+            "UPDATE prompts SET nome = ?, texto_prompt = ?, is_default = ? WHERE id = ?",
+            (nome, texto_prompt, is_default, prompt_id),
         )
+
+
+def get_default_prompt() -> sqlite3.Row | None:
+    """Return the default prompt, or None if not set."""
+    with _connect() as conn:
+        return conn.execute(
+            "SELECT * FROM prompts WHERE is_default = 1 LIMIT 1"
+        ).fetchone()
 
 
 def delete_prompt(prompt_id: int) -> None:
