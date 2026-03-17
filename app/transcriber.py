@@ -26,6 +26,7 @@ from typing import Literal
 from app.config import (
     GEMINI_MODEL,
     GOOGLE_API_KEY,
+    GEMINI_TIMEOUT,
     WHISPER_COMPUTE_TYPE,
     WHISPER_DEVICE,
     WHISPER_MODEL,
@@ -127,7 +128,10 @@ class Transcriber:
                 "google-genai nao instalado. Execute: uv add google-genai"
             ) from exc
 
-        client = genai.Client(api_key=GOOGLE_API_KEY)
+        client = genai.Client(
+            api_key=GOOGLE_API_KEY,
+            http_options=types.HttpOptions(timeout=GEMINI_TIMEOUT * 1000.0),
+        )
 
         # Build system instruction combining prompt text and glossary
         system_instruction = self._build_system_instruction(prompt_text, keywords)

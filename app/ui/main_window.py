@@ -80,6 +80,7 @@ class MainWindow(ctk.CTk):
         self._record_start_time: float | None = None
         self._rms_queue: queue.Queue[float] = queue.Queue()
         self._save_timers: dict[str, str | None] = {}
+        self._current_request_id: int = 0
 
         # --- Services ---
         self._recorder = AudioRecorder(on_rms_update=self._on_rms)
@@ -490,7 +491,6 @@ class MainWindow(ctk.CTk):
 
     def _stop_recording(self) -> None:
         self._is_recording = False
-        self._cancel_btn.pack_forget()
 
         self._record_btn.configure(
             state="disabled", text=i18n.t("ui.status.processing")
@@ -507,7 +507,7 @@ class MainWindow(ctk.CTk):
         except RuntimeError as exc:
             # DEBUG - REMOVE LATER
             print(f"[DEBUG] MainWindow: erro ao parar gravacao: {exc}")
-            self._finish_transcription_error(str(exc))
+            self._finish_transcription_error((str(exc), self._current_request_id))
             return
 
         # DEBUG - REMOVE LATER
@@ -515,9 +515,10 @@ class MainWindow(ctk.CTk):
 
         # Run transcription in a background thread
         active_tab = self._active_tab
+        request_id = self._current_request_id
         threading.Thread(
             target=self._transcribe_worker,
-            args=(wav_path, active_tab),
+            args=(wav_path, active_tab, False, request_id),
             daemon=True,
             name="TranscribeWorker",
         ).start()
@@ -525,6 +526,7 @@ class MainWindow(ctk.CTk):
     def _cancel_recording(self) -> None:
         self._is_recording = False
         self._cancel_btn.pack_forget()
+        self._current_request_id += 1  # Invalida a requisição atual
 
         # DEBUG - REMOVE LATER
         print("[DEBUG] MainWindow: gravacao cancelada")
@@ -546,7 +548,11 @@ class MainWindow(ctk.CTk):
         self._timer_label.configure(text="00:00")
 
     def _transcribe_worker(
-        self, wav_path: Path, target_tab_name: str, is_imported: bool = False
+        self,
+        wav_path: Path,
+        target_tab_name: str,
+        is_imported: bool = False,
+        request_id: int = 0,
     ) -> None:
         """Run in the worker thread — posts result to the UI queue."""
         prompt_data = self._sidebar.get_active_prompt()
@@ -575,18 +581,23 @@ class MainWindow(ctk.CTk):
                 generated_title = self._transcriber.generate_title(text)
 
             _ui_queue.put(
-                ("transcription_done", (text, target_tab_name, generated_title))
+                (
+                    "transcription_done",
+                    (text, target_tab_name, generated_title, request_id),
+                )
             )
         except TranscriptionError as exc:
             # DEBUG - REMOVE LATER
             print(f"[DEBUG] TranscribeWorker: TranscriptionError: {exc}")
-            _ui_queue.put(("transcription_error", str(exc)))
+            _ui_queue.put(("transcription_error", (str(exc), request_id)))
         except Exception as exc:  # noqa: BLE001
             # DEBUG - REMOVE LATER
             print(
                 f"[DEBUG] TranscribeWorker: erro inesperado: {type(exc).__name__}: {exc}"
             )
-            _ui_queue.put(("transcription_error", f"{type(exc).__name__}: {exc}"))
+            _ui_queue.put(
+                ("transcription_error", (f"{type(exc).__name__}: {exc}", request_id))
+            )
         finally:
             # Only delete temporary files from mic recordings, not imported files
             if not is_imported:
@@ -632,8 +643,13 @@ class MainWindow(ctk.CTk):
     # Transcription result handlers
     # ==================================================================
 
-    def _finish_transcription_ok(self, payload: tuple[str, str, str | None]) -> None:
-        text, target_tab, new_title = payload
+    def _finish_transcription_ok(
+        self, payload: tuple[str, str, str | None, int]
+    ) -> None:
+        text, target_tab, new_title, request_id = payload
+        if request_id != self._current_request_id:
+            return  # Invalidated by cancellation
+
         if not text:
             text = i18n.t("ui.status.audio_empty")
 
@@ -648,7 +664,11 @@ class MainWindow(ctk.CTk):
             text=i18n.t("ui.status.transcription_done"), text_color="#22c55e"
         )
 
-    def _finish_transcription_error(self, message: str) -> None:
+    def _finish_transcription_error(self, payload: tuple[str, int]) -> None:
+        message, request_id = payload
+        if request_id != self._current_request_id:
+            return  # Invalidated by cancellation
+
         # DEBUG - REMOVE LATER
         print(f"[DEBUG] MainWindow: erro de transcricao: {message}")
         self._restore_record_button()
@@ -935,14 +955,17 @@ class MainWindow(ctk.CTk):
         )
 
         active_tab = self._active_tab
+        request_id = self._current_request_id
         threading.Thread(
             target=self._import_worker,
-            args=(audio_path, active_tab),
+            args=(audio_path, active_tab, request_id),
             daemon=True,
             name="ImportWorker",
         ).start()
 
-    def _import_worker(self, audio_path: Path, target_tab_name: str) -> None:
+    def _import_worker(
+        self, audio_path: Path, target_tab_name: str, request_id: int
+    ) -> None:
         """Validate and transcribe an imported audio file (runs in thread)."""
         try:
             result = self._audio_validator.validate(audio_path)
@@ -962,11 +985,13 @@ class MainWindow(ctk.CTk):
 
             # Validation passed — post acceptance and start transcription
             _ui_queue.put(("import_accepted", None))
-            self._transcribe_worker(audio_path, target_tab_name, is_imported=True)
+            self._transcribe_worker(
+                audio_path, target_tab_name, is_imported=True, request_id=request_id
+            )
 
         except Exception as exc:  # noqa: BLE001
             print(f"[DEBUG] ImportWorker: erro: {exc}")
-            _ui_queue.put(("transcription_error", f"Import error: {exc}"))
+            _ui_queue.put(("transcription_error", (f"Import error: {exc}", request_id)))
 
     # ==================================================================
     # Network status
