@@ -11,6 +11,7 @@ Usage:
     wav_path = recorder.stop_recording()
 """
 
+import subprocess
 import tempfile
 import threading
 from pathlib import Path
@@ -57,8 +58,8 @@ class AudioRecorder:
         """Last computed RMS value in the range [0.0, 1.0]."""
         return self._current_rms
 
-    def start_recording(self) -> None:
-        """Begin capturing audio from the default input device."""
+    def start_recording(self, mode: str = "mic") -> None:
+        """Begin capturing audio from the default input device or system monitor."""
         if self._recording:
             return
 
@@ -66,6 +67,48 @@ class AudioRecorder:
             self._frames = []
             self._recording = True
 
+        self._capture_mode = mode
+        
+        if mode == "system":
+            # PulseAudio/PipeWire fallback for Linux System Audio via 'parec'
+            try:
+                self._proc = subprocess.Popen(
+                    [
+                        "parec",
+                        "--device=@DEFAULT_SINK@.monitor",
+                        "--format=float32le",
+                        f"--rate={_SAMPLE_RATE}",
+                        f"--channels={_CHANNELS}"
+                    ],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL
+                )
+                
+                def _parec_reader() -> None:
+                    chunk_size = _BLOCK_SIZE * 4 # float32 is 4 bytes per sample
+                    while self._recording and hasattr(self, "_proc") and self._proc and self._proc.stdout:
+                        try:
+                            # Read exactly chunk_size or less if closed
+                            data = self._proc.stdout.read(chunk_size)
+                            if not data:
+                                break
+                            
+                            # Convert to numpy array shape (samples, channels)
+                            samples = len(data) // 4
+                            chunk = np.frombuffer(data, dtype=np.float32, count=samples).reshape(-1, 1)
+                            
+                            self._audio_callback(chunk, samples, None, None)
+                        except Exception:
+                            break
+                            
+                self._parec_thread = threading.Thread(target=_parec_reader, daemon=True)
+                self._parec_thread.start()
+                return
+            except FileNotFoundError:
+                print("[DEBUG] AudioRecorder: parec não encontrado, system capture pode falhar.")
+                # fall down to standard sd.InputStream gracefully but without 'device_id' config logic
+
+        # Se for mic ou fallback, usamos som standard
         self._stream = sd.InputStream(
             samplerate=_SAMPLE_RATE,
             channels=_CHANNELS,
@@ -86,10 +129,16 @@ class AudioRecorder:
 
         self._recording = False
 
-        if self._stream:
-            self._stream.stop()
-            self._stream.close()
-            self._stream = None
+        if hasattr(self, "_capture_mode") and self._capture_mode == "system":
+            if hasattr(self, "_proc") and self._proc:
+                self._proc.terminate()
+                self._proc.wait()
+                self._proc = None
+        else:
+            if self._stream:
+                self._stream.stop()
+                self._stream.close()
+                self._stream = None
 
         # Reset meter to silence
         self._current_rms = 0.0

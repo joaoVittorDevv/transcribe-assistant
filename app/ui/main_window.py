@@ -77,6 +77,7 @@ class MainWindow(ctk.CTk):
         self._tab_count = 0
         self._active_tab: str | None = None
         self._is_recording = False
+        self._audio_mode = "mic"  # "mic" or "system"
         self._record_start_time: float | None = None
         self._rms_queue: queue.Queue[float] = queue.Queue()
         self._save_timers: dict[str, str | None] = {}
@@ -357,16 +358,36 @@ class MainWindow(ctk.CTk):
         btn_frame = ctk.CTkFrame(controls, fg_color="transparent")
         btn_frame.grid(row=0, column=4, sticky="e")
 
+        # Split Button for Recording
+        self._record_container = ctk.CTkFrame(btn_frame, fg_color="transparent")
+        
         self._record_btn = ctk.CTkButton(
-            btn_frame,
+            self._record_container,
             text=i18n.t("ui.buttons.record"),
-            width=130,
+            width=100,
             height=42,
             font=("", 14, "bold"),
+            corner_radius=0,
             fg_color="#dc2626",
             hover_color="#991b1b",
             command=self._toggle_recording,
         )
+        self._record_btn.pack(side="left")
+        
+        self._record_mode_menu = ctk.CTkOptionMenu(
+            self._record_container,
+            values=["🎙️", "🎧"],
+            width=40,
+            height=42,
+            corner_radius=0,
+            font=("", 16),
+            fg_color="#dc2626",
+            button_color="#dc2626",
+            button_hover_color="#991b1b",
+            dropdown_fg_color="gray30",
+            command=self._on_record_mode_change,
+        )
+        self._record_mode_menu.pack(side="left", padx=(1, 0))
 
         self._cancel_btn = ctk.CTkButton(
             btn_frame,
@@ -379,7 +400,7 @@ class MainWindow(ctk.CTk):
             command=self._cancel_recording,
         )
 
-        self._record_btn.pack(side="left", padx=(0, 8))
+        self._record_container.pack(side="left", padx=(0, 8))
 
         self._copy_btn = ctk.CTkButton(
             btn_frame,
@@ -469,10 +490,20 @@ class MainWindow(ctk.CTk):
         else:
             self._start_recording()
 
+    def _on_record_mode_change(self, value: str) -> None:
+        if value == "🎧":
+            self._audio_mode = "system"
+            self._record_btn.configure(fg_color="#b91c1c", hover_color="#991b1b")
+            self._record_mode_menu.configure(fg_color="#b91c1c", button_color="#b91c1c", button_hover_color="#991b1b")
+        else:
+            self._audio_mode = "mic"
+            self._record_btn.configure(fg_color="#dc2626", hover_color="#991b1b")
+            self._record_mode_menu.configure(fg_color="#dc2626", button_color="#dc2626", button_hover_color="#991b1b")
+
     def _start_recording(self) -> None:
         self._is_recording = True
         self._record_start_time = time.time()
-        self._recorder.start_recording()
+        self._recorder.start_recording(mode=self._audio_mode)
 
         # DEBUG - REMOVE LATER
         print("[DEBUG] MainWindow: gravacao iniciada")
@@ -481,6 +512,12 @@ class MainWindow(ctk.CTk):
             text=i18n.t("ui.buttons.transcribe"),
             fg_color="#16a34a",
             hover_color="#15803d",
+        )
+        self._record_mode_menu.configure(
+            fg_color="#16a34a",
+            button_color="#16a34a",
+            button_hover_color="#15803d",
+            state="disabled",
         )
         self._cancel_btn.pack(side="left", padx=(0, 8), before=self._copy_btn)
 
@@ -516,9 +553,10 @@ class MainWindow(ctk.CTk):
         # Run transcription in a background thread
         active_tab = self._active_tab
         request_id = self._current_request_id
+        audio_mode = self._audio_mode
         threading.Thread(
             target=self._transcribe_worker,
-            args=(wav_path, active_tab, False, request_id),
+            args=(wav_path, active_tab, False, request_id, audio_mode),
             daemon=True,
             name="TranscribeWorker",
         ).start()
@@ -553,11 +591,21 @@ class MainWindow(ctk.CTk):
         target_tab_name: str,
         is_imported: bool = False,
         request_id: int = 0,
+        audio_mode: str = "mic",
     ) -> None:
         """Run in the worker thread — posts result to the UI queue."""
         prompt_data = self._sidebar.get_active_prompt()
         prompt_text = prompt_data["texto_prompt"] if prompt_data else ""
         keywords = prompt_data["palavras_chave"] if prompt_data else []
+        
+        if audio_mode == "system":
+            # Concatena a instrução de diarização para a etapa de pós-processamento do LLM
+            diarization_instruction = (
+                "\n\n[Instrução Automática do Sistema]: O áudio a seguir contém múltiplos interlocutores. "
+                "Por favor, deduzindo pelo contexto das frases e trocas de turno, separe as falas "
+                "identificando-as explicitamente como 'Pessoa 1:', 'Pessoa 2:', etc."
+            )
+            prompt_text += diarization_instruction
 
         mode_map = {
             i18n.t("ui.modes.automatic"): "auto",
@@ -678,11 +726,21 @@ class MainWindow(ctk.CTk):
         )
 
     def _restore_record_button(self) -> None:
+        
+        # Determine current color based on the selected mode
+        color = "#b91c1c" if self._audio_mode == "system" else "#dc2626"
+        
         self._record_btn.configure(
             state="normal",
             text=i18n.t("ui.buttons.record"),
-            fg_color="#dc2626",
+            fg_color=color,
             hover_color="#991b1b",
+        )
+        self._record_mode_menu.configure(
+            fg_color=color,
+            button_color=color,
+            button_hover_color="#991b1b",
+            state="normal",
         )
         self._import_btn.configure(state="normal")
         self._vu_meter.set_level(0.0)
