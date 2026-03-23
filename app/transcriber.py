@@ -61,6 +61,7 @@ class Transcriber:
         prompt_text: str,
         keywords: list[str],
         mode: TranscriptionMode = "auto",
+        on_chunk: callable = None,
     ) -> str:
         """Transcribe an audio file and return the resulting text.
 
@@ -89,7 +90,7 @@ class Transcriber:
                 raise TranscriptionError(
                     "Modo 'Forcar Google' selecionado, mas sem conexao com a internet."
                 )
-            return self._transcribe_gemini(audio_path, prompt_text, keywords)
+            return self._transcribe_gemini(audio_path, prompt_text, keywords, on_chunk)
 
         # mode == "auto"
         online = self._is_online_fn()
@@ -99,7 +100,7 @@ class Transcriber:
             try:
                 # DEBUG - REMOVE LATER
                 print("[DEBUG] Transcriber: tentando Gemini...")
-                result = self._transcribe_gemini(audio_path, prompt_text, keywords)
+                result = self._transcribe_gemini(audio_path, prompt_text, keywords, on_chunk)
                 # DEBUG - REMOVE LATER
                 print("[DEBUG] Transcriber: Gemini OK")
                 return result
@@ -117,7 +118,7 @@ class Transcriber:
     # ------------------------------------------------------------------
 
     def _transcribe_gemini(
-        self, audio_path: Path, prompt_text: str, keywords: list[str]
+        self, audio_path: Path, prompt_text: str, keywords: list[str], on_chunk: callable = None
     ) -> str:
         """Upload audio to Gemini Files API and request transcription."""
         try:
@@ -146,17 +147,33 @@ class Transcriber:
 
         try:
             # SDK >= 1.0 simplified API: pass file object + string directly.
-            # The SDK auto-converts to the correct Part/Content types internally.
-            response = client.models.generate_content(
+            # Using generate_content_stream to get chunks directly as requested.
+            response_stream = client.models.generate_content_stream(
                 model=GEMINI_MODEL,
                 contents=[uploaded_file, "Transcreva o audio acima com precisao."],
                 config=types.GenerateContentConfig(
                     system_instruction=system_instruction,
                 ),
             )
+            
+            full_text_chunks = []
+            for chunk in response_stream:
+                if chunk and hasattr(chunk, "text") and chunk.text:
+                    full_text_chunks.append(chunk.text)
+                    if on_chunk:
+                        on_chunk(chunk.text)
+            
+            final_text = "".join(full_text_chunks).strip()
             # DEBUG - REMOVE LATER
-            print(f"[DEBUG] Gemini: resposta recebida ({len(response.text)} chars)")
+            print(f"[DEBUG] Gemini: resposta recebida via stream ({len(final_text)} chars)")
+            return final_text
+
         except Exception as exc:
+            # Fallback for deadline exceeded and other API issues
+            from google.api_core.exceptions import DeadlineExceeded
+            if isinstance(exc, DeadlineExceeded) or "504" in str(exc):
+                raise TranscriptionError("A conexao expirou (504: DEADLINE_EXCEEDED).") from exc
+            
             raise TranscriptionError(f"Erro na requisicao ao Gemini: {exc}") from exc
         finally:
             # Best-effort cleanup of the uploaded file
@@ -165,7 +182,7 @@ class Transcriber:
             except Exception:
                 pass
 
-        return response.text.strip()
+        return final_text
 
     @staticmethod
     def _build_system_instruction(prompt_text: str, keywords: list[str]) -> str:

@@ -7,6 +7,7 @@ requires-python = ">=3.12"
 dependencies = [
     "customtkinter>=5.2.2",
     "faster-whisper>=1.2.1",
+    "flet>=0.82.2",
     "google-genai>=1.64.0",
     "markdown>=3.10.2",
     "numpy>=2.4.2",

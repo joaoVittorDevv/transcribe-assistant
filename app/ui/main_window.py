@@ -621,7 +621,15 @@ class MainWindow(ctk.CTk):
         )
 
         try:
-            text = self._transcriber.transcribe(wav_path, prompt_text, keywords, mode)
+            was_streamed = False
+
+            def handle_chunk(chunk_text: str):
+                nonlocal was_streamed
+                was_streamed = True
+                _ui_queue.put(("transcription_chunk", (chunk_text, target_tab_name, request_id)))
+
+            text = self._transcriber.transcribe(wav_path, prompt_text, keywords, mode, on_chunk=handle_chunk)
+            
             # Generate title if session is completely new for this tab
             tab_data = self._tabs_data.get(target_tab_name)
             generated_title = None
@@ -631,7 +639,7 @@ class MainWindow(ctk.CTk):
             _ui_queue.put(
                 (
                     "transcription_done",
-                    (text, target_tab_name, generated_title, request_id),
+                    (text, target_tab_name, generated_title, request_id, was_streamed),
                 )
             )
         except TranscriptionError as exc:
@@ -667,6 +675,10 @@ class MainWindow(ctk.CTk):
                     self._finish_transcription_ok(payload)
                 elif event == "transcription_error":
                     self._finish_transcription_error(payload)
+                elif event == "transcription_chunk":
+                    chunk_text, target_tab, request_id = payload
+                    if request_id == self._current_request_id:
+                        self._insert_transcription(chunk_text, target_tab, stream_chunk=True)
                 elif event == "network_change":
                     self._apply_network_status(payload)
                 elif event == "import_rejected":
@@ -692,16 +704,18 @@ class MainWindow(ctk.CTk):
     # ==================================================================
 
     def _finish_transcription_ok(
-        self, payload: tuple[str, str, str | None, int]
+        self, payload: tuple[str, str, str | None, int, bool]
     ) -> None:
-        text, target_tab, new_title, request_id = payload
+        text, target_tab, new_title, request_id, was_streamed = payload
         if request_id != self._current_request_id:
             return  # Invalidated by cancellation
 
-        if not text:
+        if not text and not was_streamed:
             text = i18n.t("ui.status.audio_empty")
 
-        self._insert_transcription(text, target_tab)
+        if not was_streamed:
+            self._insert_transcription(text, target_tab)
+            
         self._persist_full_session(target_tab)
 
         if new_title:
@@ -766,7 +780,7 @@ class MainWindow(ctk.CTk):
     # Text area helpers
     # ==================================================================
 
-    def _insert_transcription(self, text: str, target_tab: str | None = None) -> None:
+    def _insert_transcription(self, text: str, target_tab: str | None = None, stream_chunk: bool = False) -> None:
         """Insert new transcription text at the current cursor position."""
         if not text:
             return
@@ -779,14 +793,18 @@ class MainWindow(ctk.CTk):
             return
 
         textbox = tab_data["textbox"]
-        cursor_idx = "insert"
-
+        
         # Smart spacing logic... The MarkdownEditor simplifies this.
-        # But we'll preserve the exact original prefix space logic using the internal widget access if needed,
-        # Or simpler:
-        prefix = " "
+        if not stream_chunk:
+            text = f" {text.strip()}"
 
-        textbox.insert_text(f"{prefix}{text.strip()}")
+        textbox.insert_text(text)
+        
+        if stream_chunk and getattr(textbox, 'see', None):
+            try:
+                textbox.see("end")
+            except Exception:
+                pass
 
     def _on_text_change(self, tab_name: str, event=None) -> None:
         """Handle manual text edits with debounced auto-save."""

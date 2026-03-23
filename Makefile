@@ -4,9 +4,13 @@
 # Aplicação Principal
 # ==========================================
 
-# Iniciar o sistema Transcribe Assistant
+# Iniciar o sistema Transcribe Assistant (Tkinter Padrão)
 run:
 	uv run python main.py
+
+# Iniciar o sistema Transcribe Assistant com interface Flet
+run-flet:
+	uv run python main_flet.py
 
 # ==========================================
 # Testes de Conectividade e Integração
