@@ -4,8 +4,12 @@ from app.transcriber import Transcriber
 from app.network_monitor import NetworkMonitor
 from app.ui_flet.sidebar import Sidebar
 from app.ui_flet.tab_manager import TabManager
+from app.utils.i18n_manager import i18n
+from app.ui.native_dialog import open_audio_file
+from app.audio_validator import SUPPORTED_AUDIO_EXTENSIONS
 import time
 import threading
+import os
 
 
 class FletApp(ft.Container):
@@ -23,6 +27,7 @@ class FletApp(ft.Container):
         self._network_monitor.start()
 
         self._is_recording = False
+        self._current_audio_path: str | None = None
 
         self._build_ui()
 
@@ -66,6 +71,26 @@ class FletApp(ft.Container):
             except Exception:
                 pass
 
+    def _open_file_picker(self, e: ft.ControlEvent) -> None:
+        """Abre o seletor nativo de arquivos de áudio (Zenity/Tkinter).
+        Utiliza a mesma lógica do projeto original para garantir compatibilidade.
+        """
+        file_path = open_audio_file(
+            title=i18n.get("select_file"), extensions=SUPPORTED_AUDIO_EXTENSIONS
+        )
+
+        if file_path:
+            self._current_audio_path = file_path
+            self.status_label.value = f"Arquivo: {os.path.basename(file_path)}"
+            self.status_label.color = ft.Colors.BLUE_400
+            self.record_btn.content.value = i18n.get("transcribe")
+            self.record_btn.bgcolor = ft.Colors.BLUE_700
+            try:
+                self.status_label.update()
+                self.record_btn.update()
+            except Exception:
+                pass
+
     def _clear_text(self, e) -> None:
         active = self.editor.active_tab
         if active is not None:
@@ -81,7 +106,7 @@ class FletApp(ft.Container):
         from app.ui_flet.history_window import HistoryModal
 
         self.history_btn = ft.ElevatedButton(
-            "Histórico",
+            i18n.get("history"),
             icon=ft.Icons.HISTORY,
             bgcolor="#4b5563",
             color="white",
@@ -90,15 +115,41 @@ class FletApp(ft.Container):
             ).show(),
         )
 
+        self.app_title_text = ft.Text(
+            i18n.get("app_title"), size=24, weight=ft.FontWeight.BOLD
+        )
+        self.online_status = ft.Text(i18n.get("online"), color=ft.Colors.GREEN)
+
+        # Toggle de Idioma PT/EN
+        self.lang_toggle = ft.SegmentedButton(
+            selected=["pt"],
+            segments=[
+                ft.Segment(value="pt", label=ft.Text("PT", size=11, weight="bold")),
+                ft.Segment(value="en", label=ft.Text("EN", size=11, weight="bold")),
+            ],
+            on_change=self._on_language_change,
+            show_selected_icon=False,
+            height=30,
+        )
+
+        # Botão Upload (Clips) - Movido para o Topo
+        self.upload_btn = ft.IconButton(
+            icon=ft.Icons.ATTACH_FILE_ROUNDED,
+            icon_color=ft.Colors.GREY_400,
+            tooltip=i18n.get("upload"),
+            on_click=self._open_file_picker,
+        )
+
         header = ft.Row(
             controls=[
                 ft.Icon(ft.Icons.MIC, size=32, color=ft.Colors.BLUE_400),
-                ft.Text(
-                    "Assistente de Transcrição", size=24, weight=ft.FontWeight.BOLD
-                ),
+                self.app_title_text,
                 ft.Container(expand=True),
+                self.lang_toggle,
+                self.upload_btn, # Posicionado aqui
+                ft.VerticalDivider(width=10),
                 self.history_btn,
-                ft.Text("Online ⚡", color=ft.Colors.GREEN),  # Mock
+                self.online_status,
             ],
             alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
         )
@@ -139,7 +190,7 @@ class FletApp(ft.Container):
         self.btn_area = ft.Row(spacing=5)
 
         self.record_btn = ft.Button(
-            content=ft.Text("Gravar", weight=ft.FontWeight.BOLD),
+            content=ft.Text(i18n.get("record"), weight=ft.FontWeight.BOLD),
             icon=ft.Icons.MIC_NONE,
             on_click=self._toggle_recording,
             bgcolor=ft.Colors.RED_700,
@@ -149,7 +200,7 @@ class FletApp(ft.Container):
         self.record_btn.custom_mode = "mic"
 
         self.cancel_btn = ft.Button(
-            content=ft.Text("Cancelar"),
+            content=ft.Text(i18n.get("cancel")),
             on_click=self._cancel_recording,
             bgcolor="#4b5563",
             color=ft.Colors.WHITE,
@@ -158,14 +209,14 @@ class FletApp(ft.Container):
         )
 
         self.copy_btn = ft.Button(
-            content=ft.Text("Copiar"),
+            content=ft.Text(i18n.get("copy")),
             icon=ft.Icons.COPY,
             on_click=self._copy_text,
             height=45,
         )
 
         self.reset_btn = ft.Button(
-            content=ft.Text("Limpar"),
+            content=ft.Text(i18n.get("clear")),
             icon=ft.Icons.DELETE_OUTLINE,
             on_click=self._clear_text,
             height=45,
@@ -178,7 +229,7 @@ class FletApp(ft.Container):
             self.reset_btn,
         ]
 
-        self.status_label = ft.Text("Pronto.", color="#9ca3af", size=12)
+        self.status_label = ft.Text(i18n.get("ready"), color="#9ca3af", size=12)
 
         actions = ft.Row(
             controls=[
@@ -215,16 +266,17 @@ class FletApp(ft.Container):
         else:
             self._start_recording()
 
-    def _start_recording(self):
+    def _start_recording(self) -> None:
         self._is_recording = True
-        self.record_btn.content.value = "Transcrever"
+        self.record_btn.content.value = i18n.get("transcribe")
         self.record_btn.bgcolor = ft.Colors.GREEN_700
         self.cancel_btn.visible = True
-        self.status_label.value = "Gravando..."
+        self.status_label.value = i18n.get("recording")
         self.status_label.color = ft.Colors.GREEN
 
         self.audio_mode_menu.disabled = True
         self.model_selector.disabled = True
+        self.upload_btn.disabled = True
         self.update()
 
         self._record_start_time = time.time()
@@ -258,25 +310,30 @@ class FletApp(ft.Container):
             pass
 
         self._reset_recording_ui()
-        self.status_label.value = "Contexto resetado."
+        self.status_label.value = i18n.get("context_reset")
 
-    def _stop_recording(self):
+    def _stop_recording(self) -> None:
         self._is_recording = False
         self.record_btn.disabled = True
-        self.record_btn.content.value = "Processando..."
+        self.record_btn.content.value = i18n.get("processing")
         self.record_btn.bgcolor = ft.Colors.ORANGE_700
-        self.status_label.value = "Transcrevendo áudio..."
+        self.status_label.value = i18n.get("transcribing")
         self.status_label.color = ft.Colors.ORANGE
         self.update()
 
-        # Para a gravação do audio fisicamente
-        try:
-            wav_path = self._recorder.stop_recording()
-            print(f"[FLET DEBUG] Audio salvo em: {wav_path}")
-        except Exception as exc:
-            print(f"Erro no audio: {exc}")
-            self._reset_recording_ui()
-            return
+        # Decide se transcreve o arquivo selecionado ou o audio gravado
+        wav_path = self._current_audio_path
+        self._current_audio_path = None
+
+        if not wav_path:
+            # Para a gravação do audio fisicamente se for modo gravador
+            try:
+                wav_path = self._recorder.stop_recording()
+                print(f"[FLET DEBUG] Audio gravado em: {wav_path}")
+            except Exception as exc:
+                print(f"Erro no audio: {exc}")
+                self._reset_recording_ui()
+                return
 
         # Roda a transcrição em thread separada como no Original
         threading.Thread(
@@ -306,21 +363,44 @@ class FletApp(ft.Container):
         finally:
             self._reset_recording_ui()
 
-    def _reset_recording_ui(self):
+    def _reset_recording_ui(self) -> None:
         self.record_btn.disabled = False
-        self.record_btn.content.value = "Gravar"
+        self.record_btn.content.value = i18n.get("record")
         mode = getattr(self.record_btn, "custom_mode", "mic")
         self.record_btn.bgcolor = "#b91c1c" if mode == "system" else ft.Colors.RED_700
         self.cancel_btn.visible = False
-        self.status_label.value = "Pronto."
+        self.status_label.value = i18n.get("ready")
         self.status_label.color = "#9ca3af"
 
         self.audio_mode_menu.disabled = False
         self.model_selector.disabled = False
+        self.upload_btn.disabled = False
         self.vu_meter.set_level(0.0)
         self.timer_label.value = "00:00"
 
         # Update da interface usando page para lidar com contexto thread-safe
+        try:
+            self.page.update()
+        except Exception:
+            pass
+
+    def _on_language_change(self, e: ft.ControlEvent) -> None:
+        """Altera o idioma globalmente e atualiza cada rótulo dinamicamente."""
+        lang = e.control.selected[0]
+        i18n.set_language(lang)
+
+        # Atualização dinâmica de labels persistentes mapeados
+        self.app_title_text.value = i18n.get("app_title")
+        self.online_status.value = i18n.get("online")
+        self.history_btn.text = i18n.get("history")
+        self.status_label.value = i18n.get("ready")
+
+        self.record_btn.content.value = i18n.get("record")
+        self.upload_btn.tooltip = i18n.get("upload")
+        self.cancel_btn.content.value = i18n.get("cancel")
+        self.copy_btn.content.value = i18n.get("copy")
+        self.reset_btn.content.value = i18n.get("clear")
+
         try:
             self.page.update()
         except Exception:
