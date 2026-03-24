@@ -43,7 +43,7 @@ class FletApp(ft.Container):
     def _copy_text(self, e):
         text = self.editor.get_text()
         if text:
-            self.page.set_clipboard(text)
+            self.page.run_task(ft.Clipboard().set, text)
             self.status_label.value = "Texto copiado!"
             self.status_label.color = ft.Colors.GREEN
             try:
@@ -53,6 +53,13 @@ class FletApp(ft.Container):
 
     def _on_history_restore(self, session_id, texto):
         self.editor.textfield.value = texto
+        try:
+            self.editor.textfield.update()
+        except Exception:
+            pass
+
+    def _clear_text(self, e):
+        self.editor.textfield.value = ""
         try:
             self.editor.textfield.update()
         except Exception:
@@ -148,7 +155,7 @@ class FletApp(ft.Container):
         self.reset_btn = ft.Button(
             content=ft.Text("Limpar"),
             icon=ft.Icons.DELETE_OUTLINE,
-            on_click=lambda e: self.editor.textfield.update(value=""),
+            on_click=self._clear_text,
             height=45
         )
         

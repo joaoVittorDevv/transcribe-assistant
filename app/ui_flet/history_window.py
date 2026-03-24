@@ -81,7 +81,7 @@ class HistoryModal:
                 self.list_view.controls.append(card)
 
     def _copy(self, text):
-        self.page.set_clipboard(text)
+        self.page.run_task(ft.Clipboard().set, text)
         
     def _restore(self, session):
         if self.on_restore:

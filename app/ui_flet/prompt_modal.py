@@ -3,7 +3,6 @@
 import flet as ft
 import i18n
 import app.database as db
-from app.ui.native_dialog import NativeDialog
 
 class PromptModal:
     def __init__(self, page: ft.Page, on_changed=None):
@@ -90,18 +89,15 @@ class PromptModal:
     def show(self):
         self._load_list()
         self._on_new()
-        if hasattr(self.page, "open"):
-            self.page.open(self.dialog)
-        else:
-            self.page.dialog = self.dialog
-            self.dialog.open = True
-            self.page.update()
+        self.page.overlay.append(self.dialog)
+        self.dialog.open = True
+        self.page.update()
 
     def close(self, e=None):
-        if hasattr(self.page, "close"):
-            self.page.close(self.dialog)
-        else:
-            self.dialog.open = False
+        self.dialog.open = False
+        self.page.update()
+        if self.dialog in self.page.overlay:
+            self.page.overlay.remove(self.dialog)
             self.page.update()
 
     # --- CRUD Backend ---
