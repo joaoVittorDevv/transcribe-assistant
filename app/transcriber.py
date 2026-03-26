@@ -163,6 +163,7 @@ class Transcriber:
                     if on_chunk:
                         on_chunk(chunk.text)
             
+            self._last_was_stream = True
             final_text = "".join(full_text_chunks).strip()
             # DEBUG - REMOVE LATER
             print(f"[DEBUG] Gemini: resposta recebida via stream ({len(final_text)} chars)")
@@ -220,6 +221,7 @@ class Transcriber:
                 beam_size=5,
                 vad_filter=True,  # Remove silence automatically
             )
+            self._last_was_stream = False
             return " ".join(seg.text.strip() for seg in segments).strip()
         except Exception as exc:
             err_msg = str(exc)
@@ -245,6 +247,7 @@ class Transcriber:
                     )
                     # DEBUG - REMOVE LATER
                     print("[DEBUG] Whisper: transcricao em CPU (fallback) OK")
+                    self._last_was_stream = False
                     return " ".join(seg.text.strip() for seg in segments).strip()
                 except Exception as cpu_exc:
                     raise TranscriptionError(

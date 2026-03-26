@@ -146,7 +146,7 @@ class FletApp(ft.Container):
                 self.app_title_text,
                 ft.Container(expand=True),
                 self.lang_toggle,
-                self.upload_btn, # Posicionado aqui
+                self.upload_btn,  # Posicionado aqui
                 ft.VerticalDivider(width=10),
                 self.history_btn,
                 self.online_status,
@@ -156,9 +156,9 @@ class FletApp(ft.Container):
 
         # ----- Controles Inferiores (Esquerda: Timer, VUMeter, Modos. Direita: Gravar, Copiar) -----
         self.timer_label = ft.Text("00:00", size=24, weight=ft.FontWeight.BOLD)
-        from app.ui_flet.vu_meter import VUMeter
+        from app.ui_flet.vu_meter import VuMeter
 
-        self.vu_meter = VUMeter(width=30, height=45)
+        self.vu_meter = VuMeter(num_leds=20, led_width=7, led_height=18, spacing=2)
 
         # Seletor de Modelo
         self.model_selector = ft.Dropdown(
@@ -349,6 +349,10 @@ class FletApp(ft.Container):
             # Assincronamente escreve os chunks na interface
             def handle_chunk(chunk_text: str) -> None:
                 self.editor.insert_text_active(chunk_text)
+                try:
+                    self.page.update()
+                except Exception:
+                    pass
 
             text = self._transcriber.transcribe(
                 wav_path, prompt_text, keywords, "auto", on_chunk=handle_chunk
@@ -375,7 +379,7 @@ class FletApp(ft.Container):
         self.audio_mode_menu.disabled = False
         self.model_selector.disabled = False
         self.upload_btn.disabled = False
-        self.vu_meter.set_level(0.0)
+        self.vu_meter.reset()
         self.timer_label.value = "00:00"
 
         # Update da interface usando page para lidar com contexto thread-safe

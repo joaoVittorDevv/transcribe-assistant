@@ -182,10 +182,17 @@ class AudioRecorder:
         with self._lock:
             self._frames.append(chunk)
 
-        # Compute RMS and normalize to [0.0, 1.0]
+        # Compute RMS and convert to decibels (dBFS) for realistic VU-metering
         rms = float(np.sqrt(np.mean(chunk**2)))
-        # float32 PCM peaks near 1.0, so clamp to that range
-        self._current_rms = min(rms * 3.0, 1.0)  # slight boost for visual feel
+        
+        if rms < 1e-4:  # Noise floor
+            self._current_rms = 0.0
+        else:
+            db = 20 * np.log10(rms)
+            # Map from -50dB (quiet) to 0dB (loud peak) -> 0.0 to 1.0
+            min_db = -50.0
+            level = (db - min_db) / (0.0 - min_db)
+            self._current_rms = max(0.0, min(1.0, float(level)))
 
         if self._on_rms_update:
             self._on_rms_update(self._current_rms)
