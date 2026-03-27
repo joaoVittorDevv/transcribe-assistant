@@ -7,13 +7,23 @@ Nenhum dado vaza entre instâncias.
 Inclui suporte a formatação Markdown com:
 - Barra de ferramentas com botões de formatação
 - Preview em tempo real (split view)
+
+Refatoração v2:
+- Buffer de string para evitar re-render total a cada chunk
+- Throttle de update integrado para evitar saturação de WebSocket
 """
 
 from __future__ import annotations
 
+import asyncio
+import time
+
 import flet as ft
 
 from app.ui_flet.markdown import MarkdownPreview, MarkdownToolbar
+
+# Intervalo mínimo entre atualizações de UI durante stream (ms)
+_STREAM_THROTTLE_MS = 100
 
 
 class AbaTranscricao:
@@ -52,6 +62,10 @@ class AbaTranscricao:
         self._title_edited_manually: bool = False
         self._first_insert: bool = True
         self._preview_visible: bool = False
+
+        # Throttle state for stream updates
+        self._last_ui_update: float = 0.0
+        self._pending_update: bool = False
 
         # Campo de título (cabeçalho da aba)
         self._header_field = ft.TextField(
@@ -173,9 +187,8 @@ class AbaTranscricao:
         Na **primeira** inserção, se o usuário não tiver editado o título
         manualmente, renomeia a aba com as primeiras palavras do chunk.
 
-        Utiliza ``update()`` de escopo local — nunca dispara re-render global.
-
-        Atualiza também o preview se estiver visível.
+        Concatena o chunk bruto (sem espaços artificiais) ao valor existente.
+        O Gemini já envia os tokens com espaçamento correto.
 
         Args:
             chunk: Fragmento de texto transcrito a ser inserido.
@@ -187,9 +200,28 @@ class AbaTranscricao:
             self._apply_auto_title(chunk)
             self._first_insert = False
 
+        # Concatenação bruta — preserva a integridade dos tokens da LLM
         current = self._body.value or ""
-        separator = " " if current and not chunk.startswith(" ") else ""
-        self._body.value = current + separator + chunk
+        self._body.value = current + chunk
+        self._pending_update = True
+
+    def flush_update(self) -> bool:
+        """Aplica o update visual respeitando o throttle.
+
+        Returns:
+            True se o update foi executado, False se foi suprimido pelo throttle.
+        """
+        if not self._pending_update:
+            return False
+
+        now = time.monotonic()
+        elapsed_ms = (now - self._last_ui_update) * 1000
+
+        if elapsed_ms < _STREAM_THROTTLE_MS:
+            return False
+
+        self._last_ui_update = now
+        self._pending_update = False
 
         try:
             self._body.update()
@@ -197,6 +229,21 @@ class AbaTranscricao:
             pass
 
         # Atualiza preview se visível
+        if self._preview_visible:
+            self._preview.render(self._body.value or "")
+
+        return True
+
+    def force_update(self) -> None:
+        """Força o update visual independente do throttle (usado no final do stream)."""
+        self._pending_update = False
+        self._last_ui_update = time.monotonic()
+
+        try:
+            self._body.update()
+        except Exception:
+            pass
+
         if self._preview_visible:
             self._preview.render(self._body.value or "")
 
@@ -212,6 +259,7 @@ class AbaTranscricao:
         """
         self._body.value = ""
         self._first_insert = True
+        self._pending_update = False
 
         if not self._title_edited_manually:
             self._header_field.value = f"Transcrição {self._tab_index}"

@@ -5,10 +5,13 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "agno>=2.5.11",
     "customtkinter>=5.2.2",
     "faster-whisper>=1.2.1",
     "flet>=0.82.2",
     "google-genai>=1.64.0",
+    "google-generativeai>=0.8.6",
+    "httpx>=0.28.1",
     "markdown>=3.10.2",
     "numpy>=2.4.2",
     "pillow>=12.1.1",

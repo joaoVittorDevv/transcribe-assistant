@@ -1,33 +1,51 @@
+"""app.ui_flet.main_app — Interface principal do Flet (Async).
+
+Orquestra todos os serviços de backend (AudioRecorder, NetworkMonitor,
+TranscriberAgent) e componentes de UI (Sidebar, TabManager, VUMeter).
+
+Estratégia de Threading/Async:
+  - Captura de áudio       → sounddevice callback → on_rms → VU Meter
+  - Salvamento WAV         → asyncio.to_thread (não bloqueia UI)
+  - Upload Files API       → asyncio.to_thread (não bloqueia UI)
+  - Stream da transcrição  → async for event in agent.arun(stream=True)
+  - Atualização de UI      → throttled a cada 100ms via flush_update()
+"""
+
+import asyncio
+import os
+import time
+import threading
+from pathlib import Path
+
 import flet as ft
+
 from app.audio_recorder import AudioRecorder
-from app.transcriber import Transcriber
 from app.network_monitor import NetworkMonitor
 from app.ui_flet.sidebar import Sidebar
 from app.ui_flet.tab_manager import TabManager
 from app.utils.i18n_manager import i18n
 from app.ui.native_dialog import open_audio_file
 from app.audio_validator import SUPPORTED_AUDIO_EXTENSIONS
-import time
-import threading
-import os
 
 
 class FletApp(ft.Container):
     def __init__(self, page: ft.Page):
         super().__init__()
         self.expand = True
-        self._page = page  # Armazenado para uso nos componentes filhos
+        self._page = page
 
-        # --- Serviços (Backend Igual ao Tkinter) ---
+        # --- Serviços (Backend) ---
         self._network_monitor = NetworkMonitor(on_status_change=self._on_network_change)
         self._recorder = AudioRecorder(on_rms_update=self._on_rms)
-        self._transcriber = Transcriber(
-            is_online_fn=lambda: self._network_monitor.is_online
-        )
         self._network_monitor.start()
 
+        # --- State ---
         self._is_recording = False
         self._current_audio_path: str | None = None
+        self._current_request_id: int = 0
+        self._active_task: asyncio.Task | None = None
+        self._record_start_time: float | None = None
+        self._timer_running = False
 
         self._build_ui()
 
@@ -53,7 +71,7 @@ class FletApp(ft.Container):
         active = self.editor.active_tab
         text = active.get_text() if active is not None else ""
         if text:
-            self.page.run_task(ft.Clipboard().set, text)
+            self.page.set_clipboard(text)
             self.status_label.value = "Texto copiado!"
             self.status_label.color = ft.Colors.GREEN
             try:
@@ -72,9 +90,7 @@ class FletApp(ft.Container):
                 pass
 
     def _open_file_picker(self, e: ft.ControlEvent) -> None:
-        """Abre o seletor nativo de arquivos de áudio (Zenity/Tkinter).
-        Utiliza a mesma lógica do projeto original para garantir compatibilidade.
-        """
+        """Abre o seletor nativo de arquivos de áudio."""
         file_path = open_audio_file(
             title=i18n.get("select_file"), extensions=SUPPORTED_AUDIO_EXTENSIONS
         )
@@ -100,7 +116,7 @@ class FletApp(ft.Container):
         # Componentes Filhos
         self.sidebar = Sidebar()
         self.editor = TabManager(self._page)
-        self.editor.add_tab()  # Abre a primeira aba por padrão
+        self.editor.add_tab()
 
         # Header Top Bar
         from app.ui_flet.history_window import HistoryModal
@@ -132,7 +148,7 @@ class FletApp(ft.Container):
             height=30,
         )
 
-        # Botão Upload (Clips) - Movido para o Topo
+        # Botão Upload
         self.upload_btn = ft.IconButton(
             icon=ft.Icons.ATTACH_FILE_ROUNDED,
             icon_color=ft.Colors.GREY_400,
@@ -145,7 +161,7 @@ class FletApp(ft.Container):
                 self.app_title_text,
                 ft.Container(expand=True),
                 self.lang_toggle,
-                self.upload_btn,  # Posicionado aqui
+                self.upload_btn,
                 ft.VerticalDivider(width=10),
                 self.history_btn,
                 self.online_status,
@@ -153,13 +169,12 @@ class FletApp(ft.Container):
             alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
         )
 
-        # ----- Controles Inferiores (Esquerda: Timer, VUMeter, Modos. Direita: Gravar, Copiar) -----
+        # Controles Inferiores
         self.timer_label = ft.Text("00:00", size=24, weight=ft.FontWeight.BOLD)
         from app.ui_flet.vu_meter import VuMeter
 
         self.vu_meter = VuMeter(num_leds=20, led_width=7, led_height=18, spacing=2)
 
-        # Seletor de Modelo
         self.model_selector = ft.Dropdown(
             options=[
                 ft.dropdown.Option("Auto"),
@@ -172,7 +187,6 @@ class FletApp(ft.Container):
             height=45,
         )
 
-        # Seletor Microfone x Sistema
         self.audio_mode_menu = ft.Dropdown(
             options=[
                 ft.dropdown.Option("mic", text="🎙️"),
@@ -185,7 +199,6 @@ class FletApp(ft.Container):
             on_select=self._on_audio_mode_change,
         )
 
-        # Area de botões dinâmicos
         self.btn_area = ft.Row(spacing=5)
 
         self.record_btn = ft.Button(
@@ -236,7 +249,7 @@ class FletApp(ft.Container):
                 self.vu_meter,
                 self.model_selector,
                 self.audio_mode_menu,
-                ft.Container(expand=True),  # Espaçador Flexível central
+                ft.Container(expand=True),
                 self.status_label,
                 ft.Container(width=10),
                 self.btn_area,
@@ -257,7 +270,9 @@ class FletApp(ft.Container):
 
         self.content = ft.Row(controls=[self.sidebar, main_column], expand=True)
 
-    # --- Lógica Conectada ---
+    # ==================================================================
+    # Recording Flow (Async)
+    # ==================================================================
 
     def _toggle_recording(self, e):
         if self._is_recording:
@@ -279,31 +294,40 @@ class FletApp(ft.Container):
         self.update()
 
         self._record_start_time = time.time()
-        self._update_timer()
+        self._timer_running = True
+        self._start_timer_loop()
 
         mode = getattr(self.record_btn, "custom_mode", "mic")
         self._recorder.start_recording(mode=mode)
 
-    def _update_timer(self):
-        if not self._is_recording:
+    def _start_timer_loop(self):
+        """Timer loop usando threading.Timer (compatível com thread de áudio)."""
+        if not self._timer_running:
             return
         elapsed = int(time.time() - self._record_start_time)
         mins, secs = divmod(elapsed, 60)
         self.timer_label.value = f"{mins:02d}:{secs:02d}"
         try:
             self.timer_label.update()
-            # Flet nao tem loop de after interno nativo como tk, usa async sleep em background
-            # Porem, criar thread para rodar loop:
-            threading.Timer(0.5, self._update_timer).start()
         except Exception:
             pass
+        if self._timer_running:
+            threading.Timer(0.5, self._start_timer_loop).start()
 
     def _cancel_recording(self, e):
         self._is_recording = False
+        self._timer_running = False
+        self._current_request_id += 1  # Invalida qualquer task ativa
+        self.cancel_btn.visible = False
+
+        # Cancela a task async se existir
+        if self._active_task and not self._active_task.done():
+            self._active_task.cancel()
+            self._active_task = None
+
         try:
             wav_path = self._recorder.stop_recording()
             import pathlib
-
             pathlib.Path(wav_path).unlink(missing_ok=True)
         except Exception:
             pass
@@ -313,6 +337,7 @@ class FletApp(ft.Container):
 
     def _stop_recording(self) -> None:
         self._is_recording = False
+        self._timer_running = False
         self.record_btn.disabled = True
         self.record_btn.content.value = i18n.get("processing")
         self.record_btn.bgcolor = ft.Colors.ORANGE_700
@@ -320,12 +345,10 @@ class FletApp(ft.Container):
         self.status_label.color = ft.Colors.ORANGE
         self.update()
 
-        # Decide se transcreve o arquivo selecionado ou o audio gravado
         wav_path = self._current_audio_path
         self._current_audio_path = None
 
         if not wav_path:
-            # Para a gravação do audio fisicamente se for modo gravador
             try:
                 wav_path = self._recorder.stop_recording()
                 print(f"[FLET DEBUG] Audio gravado em: {wav_path}")
@@ -334,37 +357,135 @@ class FletApp(ft.Container):
                 self._reset_recording_ui()
                 return
 
-        # Roda a transcrição em thread separada como no Original
-        threading.Thread(
-            target=self._transcribe_worker, args=(wav_path,), daemon=True
-        ).start()
+        # Captura o request_id e a aba alvo ANTES de iniciar a task
+        request_id = self._current_request_id
+        audio_mode = getattr(self.record_btn, "custom_mode", "mic")
 
-    def _transcribe_worker(self, wav_path):
+        # Dispara a transcrição como uma task async
+        self._active_task = self.page.run_task(
+            self._transcribe_async,
+            Path(wav_path) if isinstance(wav_path, str) else wav_path,
+            request_id,
+            audio_mode,
+        )
+
+    async def _transcribe_async(
+        self,
+        wav_path: Path,
+        request_id: int,
+        audio_mode: str,
+    ) -> None:
+        """Task assíncrona: upload → agente stream → UI throttled."""
+        from app.agents.transcriber_agent import (
+            create_transcription_agent,
+            upload_audio_async,
+            delete_uploaded_file,
+            transcribe_stream,
+        )
+
+        # Verifica se o request_id ainda é válido
+        if request_id != self._current_request_id:
+            return
+
+        # Coleta prompt e keywords
         prompt_data = self.sidebar.get_active_prompt()
         prompt_text = prompt_data["texto_prompt"] if prompt_data else ""
         keywords = prompt_data["palavras_chave"] if prompt_data else []
 
+        if audio_mode == "system":
+            diarization_instruction = (
+                "\n\n[Instrução Automática do Sistema]: O áudio a seguir contém múltiplos interlocutores. "
+                "Por favor, deduzindo pelo contexto das frases e trocas de turno, separe as falas "
+                "identificando-as explicitamente como 'Pessoa 1:', 'Pessoa 2:', etc."
+            )
+            prompt_text += diarization_instruction
+
+        uploaded_file = None
         try:
-            # Assincronamente escreve os chunks na interface
-            def handle_chunk(chunk_text: str) -> None:
-                self.editor.insert_text_active(chunk_text)
+            # 1. Upload assíncrono do áudio
+            self.status_label.value = "Enviando áudio..."
+            self.status_label.color = ft.Colors.ORANGE
+            try:
+                self.status_label.update()
+            except Exception:
+                pass
+
+            uploaded_file = await upload_audio_async(wav_path)
+            print(f"[FLET DEBUG] Upload concluído: {uploaded_file.name}")
+
+            if request_id != self._current_request_id:
+                return
+
+            # 2. Cria o agente
+            agent = create_transcription_agent(prompt_text, keywords)
+
+            # 3. Stream assíncrono do agente
+            self.status_label.value = i18n.get("transcribing")
+            try:
+                self.status_label.update()
+            except Exception:
+                pass
+
+            active_tab = self.editor.active_tab
+            if active_tab is None:
+                return
+
+            has_content = False
+            async for chunk_text in transcribe_stream(agent, uploaded_file):
+                if request_id != self._current_request_id:
+                    return  # Cancelado pelo usuário
+
+                has_content = True
+                active_tab.insert_text(chunk_text)
+
+                # Throttled update — só envia pro frontend a cada 100ms
+                if active_tab.flush_update():
+                    try:
+                        self.page.update()
+                    except Exception:
+                        pass
+
+            # 4. Force final update para garantir que todo texto apareceu
+            if has_content:
+                active_tab.force_update()
                 try:
                     self.page.update()
                 except Exception:
                     pass
 
-            text = self._transcriber.transcribe(
-                wav_path, prompt_text, keywords, "auto", on_chunk=handle_chunk
-            )
+            if not has_content:
+                active_tab.insert_text("(Nenhuma fala detectada no áudio)")
+                active_tab.force_update()
 
-            # Se não teve stream, adiciona o total
-            if not getattr(self._transcriber, "_last_was_stream", False) and text:
-                self.editor.insert_text_active(text)
+            # Sucesso
+            self.status_label.value = "Transcrição concluída ✓"
+            self.status_label.color = ft.Colors.GREEN
 
-        except Exception as e:
-            print(f"[Erro na Transcrição] {e}")
+        except asyncio.CancelledError:
+            print("[FLET DEBUG] Transcrição cancelada pelo usuário")
+            self.status_label.value = i18n.get("context_reset")
+            self.status_label.color = "#9ca3af"
+
+        except Exception as exc:
+            print(f"[FLET ERROR] Erro na transcrição: {type(exc).__name__}: {exc}")
+            self.status_label.value = f"Erro: {exc}"
+            self.status_label.color = ft.Colors.RED
+
         finally:
+            # Cleanup: remove uploaded file e WAV local
+            if uploaded_file:
+                await delete_uploaded_file(uploaded_file)
+
+            try:
+                await asyncio.to_thread(wav_path.unlink, missing_ok=True)
+            except Exception:
+                pass
+
             self._reset_recording_ui()
+
+    # ==================================================================
+    # UI Helpers
+    # ==================================================================
 
     def _reset_recording_ui(self) -> None:
         self.record_btn.disabled = False
@@ -381,7 +502,6 @@ class FletApp(ft.Container):
         self.vu_meter.reset()
         self.timer_label.value = "00:00"
 
-        # Update da interface usando page para lidar com contexto thread-safe
         try:
             self.page.update()
         except Exception:
@@ -392,7 +512,6 @@ class FletApp(ft.Container):
         lang = e.control.selected[0]
         i18n.set_language(lang)
 
-        # Atualização dinâmica de labels persistentes mapeados
         self.app_title_text.value = i18n.get("app_title")
         self.online_status.value = i18n.get("online")
         self.history_btn.text = i18n.get("history")
@@ -411,7 +530,7 @@ class FletApp(ft.Container):
 
 
 def init_app(page: ft.Page):
-    page.title = "Transcribe Assistant (Flet V1)"
+    page.title = "Transcribe Assistant (Flet V2 — Agno)"
     page.theme_mode = ft.ThemeMode.DARK
     page.padding = 20
 
