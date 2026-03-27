@@ -66,6 +66,7 @@ class TabManager(ft.Container):
 
         # Tabs: orquestrador pai
         self._tabs = ft.Tabs(
+            expand=True,
             content=ft.Column(
                 controls=[
                     self._tab_bar,

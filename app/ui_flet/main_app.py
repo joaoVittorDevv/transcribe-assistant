@@ -142,7 +142,6 @@ class FletApp(ft.Container):
 
         header = ft.Row(
             controls=[
-                ft.Icon(ft.Icons.MIC, size=32, color=ft.Colors.BLUE_400),
                 self.app_title_text,
                 ft.Container(expand=True),
                 self.lang_toggle,
