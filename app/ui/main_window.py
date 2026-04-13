@@ -29,6 +29,7 @@ from app.audio_validator import (
 from app.network_monitor import NetworkMonitor
 from app.transcriber import Transcriber, TranscriptionError
 from app.ui.history_window import HistoryWindow
+from app.ui.markdown_editor import MarkdownEditor
 from app.ui.native_dialog import open_audio_file
 from app.ui.sidebar import Sidebar
 from app.ui.vu_meter import VUMeter
@@ -76,9 +77,11 @@ class MainWindow(ctk.CTk):
         self._tab_count = 0
         self._active_tab: str | None = None
         self._is_recording = False
+        self._audio_mode = "mic"  # "mic" or "system"
         self._record_start_time: float | None = None
         self._rms_queue: queue.Queue[float] = queue.Queue()
         self._save_timers: dict[str, str | None] = {}
+        self._current_request_id: int = 0
 
         # --- Services ---
         self._recorder = AudioRecorder(on_rms_update=self._on_rms)
@@ -280,16 +283,15 @@ class MainWindow(ctk.CTk):
 
         self._new_tab_btn_top.pack(side="left", padx=(0, 4), pady=4)
 
-        textbox = ctk.CTkTextbox(
+        textbox = MarkdownEditor(
             self._content_frame,
-            font=("", 14),
-            wrap="word",
-            state="normal",
         )
         textbox.grid(row=0, column=0, sticky="nsew", pady=0)
-        textbox.insert("1.0", content)
-        textbox.bind(
-            "<KeyRelease>", lambda event, t=name: self._on_text_change(t, event)
+        textbox.insert_text(content, index="1.0")
+
+        # O método BindTextChange lida com a assinatura <KeyRelease> e injeta o callback
+        textbox.bind_text_change(
+            lambda event=None, t=name: self._on_text_change(t, event)
         )
 
         self._tabs_data[name] = {
@@ -356,16 +358,36 @@ class MainWindow(ctk.CTk):
         btn_frame = ctk.CTkFrame(controls, fg_color="transparent")
         btn_frame.grid(row=0, column=4, sticky="e")
 
+        # Split Button for Recording
+        self._record_container = ctk.CTkFrame(btn_frame, fg_color="transparent")
+        
         self._record_btn = ctk.CTkButton(
-            btn_frame,
+            self._record_container,
             text=i18n.t("ui.buttons.record"),
-            width=130,
+            width=100,
             height=42,
             font=("", 14, "bold"),
+            corner_radius=0,
             fg_color="#dc2626",
             hover_color="#991b1b",
             command=self._toggle_recording,
         )
+        self._record_btn.pack(side="left")
+        
+        self._record_mode_menu = ctk.CTkOptionMenu(
+            self._record_container,
+            values=["🎙️", "🎧"],
+            width=40,
+            height=42,
+            corner_radius=0,
+            font=("", 16),
+            fg_color="#dc2626",
+            button_color="#dc2626",
+            button_hover_color="#991b1b",
+            dropdown_fg_color="gray30",
+            command=self._on_record_mode_change,
+        )
+        self._record_mode_menu.pack(side="left", padx=(1, 0))
 
         self._cancel_btn = ctk.CTkButton(
             btn_frame,
@@ -378,7 +400,7 @@ class MainWindow(ctk.CTk):
             command=self._cancel_recording,
         )
 
-        self._record_btn.pack(side="left", padx=(0, 8))
+        self._record_container.pack(side="left", padx=(0, 8))
 
         self._copy_btn = ctk.CTkButton(
             btn_frame,
@@ -468,10 +490,20 @@ class MainWindow(ctk.CTk):
         else:
             self._start_recording()
 
+    def _on_record_mode_change(self, value: str) -> None:
+        if value == "🎧":
+            self._audio_mode = "system"
+            self._record_btn.configure(fg_color="#b91c1c", hover_color="#991b1b")
+            self._record_mode_menu.configure(fg_color="#b91c1c", button_color="#b91c1c", button_hover_color="#991b1b")
+        else:
+            self._audio_mode = "mic"
+            self._record_btn.configure(fg_color="#dc2626", hover_color="#991b1b")
+            self._record_mode_menu.configure(fg_color="#dc2626", button_color="#dc2626", button_hover_color="#991b1b")
+
     def _start_recording(self) -> None:
         self._is_recording = True
         self._record_start_time = time.time()
-        self._recorder.start_recording()
+        self._recorder.start_recording(mode=self._audio_mode)
 
         # DEBUG - REMOVE LATER
         print("[DEBUG] MainWindow: gravacao iniciada")
@@ -480,6 +512,12 @@ class MainWindow(ctk.CTk):
             text=i18n.t("ui.buttons.transcribe"),
             fg_color="#16a34a",
             hover_color="#15803d",
+        )
+        self._record_mode_menu.configure(
+            fg_color="#16a34a",
+            button_color="#16a34a",
+            button_hover_color="#15803d",
+            state="disabled",
         )
         self._cancel_btn.pack(side="left", padx=(0, 8), before=self._copy_btn)
 
@@ -490,7 +528,6 @@ class MainWindow(ctk.CTk):
 
     def _stop_recording(self) -> None:
         self._is_recording = False
-        self._cancel_btn.pack_forget()
 
         self._record_btn.configure(
             state="disabled", text=i18n.t("ui.status.processing")
@@ -507,7 +544,7 @@ class MainWindow(ctk.CTk):
         except RuntimeError as exc:
             # DEBUG - REMOVE LATER
             print(f"[DEBUG] MainWindow: erro ao parar gravacao: {exc}")
-            self._finish_transcription_error(str(exc))
+            self._finish_transcription_error((str(exc), self._current_request_id))
             return
 
         # DEBUG - REMOVE LATER
@@ -515,9 +552,11 @@ class MainWindow(ctk.CTk):
 
         # Run transcription in a background thread
         active_tab = self._active_tab
+        request_id = self._current_request_id
+        audio_mode = self._audio_mode
         threading.Thread(
             target=self._transcribe_worker,
-            args=(wav_path, active_tab),
+            args=(wav_path, active_tab, False, request_id, audio_mode),
             daemon=True,
             name="TranscribeWorker",
         ).start()
@@ -525,6 +564,7 @@ class MainWindow(ctk.CTk):
     def _cancel_recording(self) -> None:
         self._is_recording = False
         self._cancel_btn.pack_forget()
+        self._current_request_id += 1  # Invalida a requisição atual
 
         # DEBUG - REMOVE LATER
         print("[DEBUG] MainWindow: gravacao cancelada")
@@ -546,12 +586,26 @@ class MainWindow(ctk.CTk):
         self._timer_label.configure(text="00:00")
 
     def _transcribe_worker(
-        self, wav_path: Path, target_tab_name: str, is_imported: bool = False
+        self,
+        wav_path: Path,
+        target_tab_name: str,
+        is_imported: bool = False,
+        request_id: int = 0,
+        audio_mode: str = "mic",
     ) -> None:
         """Run in the worker thread — posts result to the UI queue."""
         prompt_data = self._sidebar.get_active_prompt()
         prompt_text = prompt_data["texto_prompt"] if prompt_data else ""
         keywords = prompt_data["palavras_chave"] if prompt_data else []
+        
+        if audio_mode == "system":
+            # Concatena a instrução de diarização para a etapa de pós-processamento do LLM
+            diarization_instruction = (
+                "\n\n[Instrução Automática do Sistema]: O áudio a seguir contém múltiplos interlocutores. "
+                "Por favor, deduzindo pelo contexto das frases e trocas de turno, separe as falas "
+                "identificando-as explicitamente como 'Pessoa 1:', 'Pessoa 2:', etc."
+            )
+            prompt_text += diarization_instruction
 
         mode_map = {
             i18n.t("ui.modes.automatic"): "auto",
@@ -567,7 +621,15 @@ class MainWindow(ctk.CTk):
         )
 
         try:
-            text = self._transcriber.transcribe(wav_path, prompt_text, keywords, mode)
+            was_streamed = False
+
+            def handle_chunk(chunk_text: str):
+                nonlocal was_streamed
+                was_streamed = True
+                _ui_queue.put(("transcription_chunk", (chunk_text, target_tab_name, request_id)))
+
+            text = self._transcriber.transcribe(wav_path, prompt_text, keywords, mode, on_chunk=handle_chunk)
+            
             # Generate title if session is completely new for this tab
             tab_data = self._tabs_data.get(target_tab_name)
             generated_title = None
@@ -575,18 +637,23 @@ class MainWindow(ctk.CTk):
                 generated_title = self._transcriber.generate_title(text)
 
             _ui_queue.put(
-                ("transcription_done", (text, target_tab_name, generated_title))
+                (
+                    "transcription_done",
+                    (text, target_tab_name, generated_title, request_id, was_streamed),
+                )
             )
         except TranscriptionError as exc:
             # DEBUG - REMOVE LATER
             print(f"[DEBUG] TranscribeWorker: TranscriptionError: {exc}")
-            _ui_queue.put(("transcription_error", str(exc)))
+            _ui_queue.put(("transcription_error", (str(exc), request_id)))
         except Exception as exc:  # noqa: BLE001
             # DEBUG - REMOVE LATER
             print(
                 f"[DEBUG] TranscribeWorker: erro inesperado: {type(exc).__name__}: {exc}"
             )
-            _ui_queue.put(("transcription_error", f"{type(exc).__name__}: {exc}"))
+            _ui_queue.put(
+                ("transcription_error", (f"{type(exc).__name__}: {exc}", request_id))
+            )
         finally:
             # Only delete temporary files from mic recordings, not imported files
             if not is_imported:
@@ -608,6 +675,10 @@ class MainWindow(ctk.CTk):
                     self._finish_transcription_ok(payload)
                 elif event == "transcription_error":
                     self._finish_transcription_error(payload)
+                elif event == "transcription_chunk":
+                    chunk_text, target_tab, request_id = payload
+                    if request_id == self._current_request_id:
+                        self._insert_transcription(chunk_text, target_tab, stream_chunk=True)
                 elif event == "network_change":
                     self._apply_network_status(payload)
                 elif event == "import_rejected":
@@ -632,12 +703,19 @@ class MainWindow(ctk.CTk):
     # Transcription result handlers
     # ==================================================================
 
-    def _finish_transcription_ok(self, payload: tuple[str, str, str | None]) -> None:
-        text, target_tab, new_title = payload
-        if not text:
+    def _finish_transcription_ok(
+        self, payload: tuple[str, str, str | None, int, bool]
+    ) -> None:
+        text, target_tab, new_title, request_id, was_streamed = payload
+        if request_id != self._current_request_id:
+            return  # Invalidated by cancellation
+
+        if not text and not was_streamed:
             text = i18n.t("ui.status.audio_empty")
 
-        self._insert_transcription(text, target_tab)
+        if not was_streamed:
+            self._insert_transcription(text, target_tab)
+            
         self._persist_full_session(target_tab)
 
         if new_title:
@@ -648,7 +726,11 @@ class MainWindow(ctk.CTk):
             text=i18n.t("ui.status.transcription_done"), text_color="#22c55e"
         )
 
-    def _finish_transcription_error(self, message: str) -> None:
+    def _finish_transcription_error(self, payload: tuple[str, int]) -> None:
+        message, request_id = payload
+        if request_id != self._current_request_id:
+            return  # Invalidated by cancellation
+
         # DEBUG - REMOVE LATER
         print(f"[DEBUG] MainWindow: erro de transcricao: {message}")
         self._restore_record_button()
@@ -658,11 +740,21 @@ class MainWindow(ctk.CTk):
         )
 
     def _restore_record_button(self) -> None:
+        
+        # Determine current color based on the selected mode
+        color = "#b91c1c" if self._audio_mode == "system" else "#dc2626"
+        
         self._record_btn.configure(
             state="normal",
             text=i18n.t("ui.buttons.record"),
-            fg_color="#dc2626",
+            fg_color=color,
             hover_color="#991b1b",
+        )
+        self._record_mode_menu.configure(
+            fg_color=color,
+            button_color=color,
+            button_hover_color="#991b1b",
+            state="normal",
         )
         self._import_btn.configure(state="normal")
         self._vu_meter.set_level(0.0)
@@ -688,7 +780,7 @@ class MainWindow(ctk.CTk):
     # Text area helpers
     # ==================================================================
 
-    def _insert_transcription(self, text: str, target_tab: str | None = None) -> None:
+    def _insert_transcription(self, text: str, target_tab: str | None = None, stream_chunk: bool = False) -> None:
         """Insert new transcription text at the current cursor position."""
         if not text:
             return
@@ -701,18 +793,18 @@ class MainWindow(ctk.CTk):
             return
 
         textbox = tab_data["textbox"]
-        cursor_idx = textbox.index("insert")
+        
+        # Smart spacing logic... The MarkdownEditor simplifies this.
+        if not stream_chunk:
+            text = f" {text.strip()}"
 
-        # Smart spacing: add a space if the previous character isn't a space/newline
-        # and we are not at the very beginning.
-        prefix = ""
-        if cursor_idx != "1.0":
-            prev_char = textbox.get(f"{cursor_idx}-1c", cursor_idx)
-            if prev_char and prev_char.strip():
-                prefix = " "
-
-        textbox.insert("insert", f"{prefix}{text}")
-        textbox.see("insert")
+        textbox.insert_text(text)
+        
+        if stream_chunk and getattr(textbox, 'see', None):
+            try:
+                textbox.see("end")
+            except Exception:
+                pass
 
     def _on_text_change(self, tab_name: str, event=None) -> None:
         """Handle manual text edits with debounced auto-save."""
@@ -726,7 +818,7 @@ class MainWindow(ctk.CTk):
         tab_data = self._tabs_data.get(tab_name)
         if not tab_data:
             return ""
-        return tab_data["textbox"].get("1.0", "end").strip()
+        return tab_data["textbox"].get_text()
 
     # ==================================================================
     # Database session management
@@ -766,7 +858,7 @@ class MainWindow(ctk.CTk):
             return
 
         tab_data["session_id"] = None
-        tab_data["textbox"].delete("1.0", "end")
+        tab_data["textbox"].delete_text()
 
         self._timer_label.configure(text="00:00")
         self._status_label.configure(
@@ -855,8 +947,8 @@ class MainWindow(ctk.CTk):
         )
 
         # Debounce timer needs the new tab name
-        tab_data["textbox"].bind(
-            "<KeyRelease>", lambda event, t=new_name: self._on_text_change(t, event)
+        tab_data["textbox"].bind_text_change(
+            lambda event=None, t=new_name: self._on_text_change(t, event)
         )
 
         self._tabs_data[new_name] = tab_data
@@ -939,14 +1031,17 @@ class MainWindow(ctk.CTk):
         )
 
         active_tab = self._active_tab
+        request_id = self._current_request_id
         threading.Thread(
             target=self._import_worker,
-            args=(audio_path, active_tab),
+            args=(audio_path, active_tab, request_id),
             daemon=True,
             name="ImportWorker",
         ).start()
 
-    def _import_worker(self, audio_path: Path, target_tab_name: str) -> None:
+    def _import_worker(
+        self, audio_path: Path, target_tab_name: str, request_id: int
+    ) -> None:
         """Validate and transcribe an imported audio file (runs in thread)."""
         try:
             result = self._audio_validator.validate(audio_path)
@@ -966,11 +1061,13 @@ class MainWindow(ctk.CTk):
 
             # Validation passed — post acceptance and start transcription
             _ui_queue.put(("import_accepted", None))
-            self._transcribe_worker(audio_path, target_tab_name, is_imported=True)
+            self._transcribe_worker(
+                audio_path, target_tab_name, is_imported=True, request_id=request_id
+            )
 
         except Exception as exc:  # noqa: BLE001
             print(f"[DEBUG] ImportWorker: erro: {exc}")
-            _ui_queue.put(("transcription_error", f"Import error: {exc}"))
+            _ui_queue.put(("transcription_error", (f"Import error: {exc}", request_id)))
 
     # ==================================================================
     # Network status
