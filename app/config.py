@@ -48,6 +48,7 @@ def _optional(key: str, default: str) -> str:
 # ---------------------------------------------------------------------------
 GOOGLE_API_KEY: str = _require("GOOGLE_API_KEY")
 GEMINI_MODEL: str = _optional("GEMINI_MODEL", "gemini-2.0-flash")
+GEMINI_TIMEOUT: float = float(_optional("GEMINI_TIMEOUT", "60.0"))
 
 # ---------------------------------------------------------------------------
 # Language

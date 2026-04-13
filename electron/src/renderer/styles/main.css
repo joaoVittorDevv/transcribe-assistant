@@ -1,0 +1,68 @@
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    box-sizing: border-box;
+  }
+
+  html, body, #app {
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    background: linear-gradient(135deg, #121B26 0%, #0F1720 100%);
+    font-family: 'Plus Jakarta Sans', sans-serif;
+    color: #E0E0E0;
+  }
+}
+
+@layer components {
+  .glass-surface {
+    background: rgba(20, 32, 48, 0.6);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 16px;
+  }
+
+  .glass-btn {
+    background: rgba(20, 32, 48, 0.8);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 12px;
+    color: #E0E0E0;
+    font-family: 'Plus Jakarta Sans', sans-serif;
+    font-weight: 500;
+    transition: all 0.15s ease;
+    cursor: pointer;
+  }
+
+  .glass-btn:hover {
+    background: rgba(30, 42, 58, 0.8);
+    border-color: rgba(255, 255, 255, 0.2);
+  }
+
+  .glass-input {
+    background: rgba(20, 32, 48, 0.4);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 12px;
+    color: #E0E0E0;
+    font-family: 'Plus Jakarta Sans', sans-serif;
+    outline: none;
+  }
+
+  .glass-input:focus {
+    border-color: rgba(59, 130, 246, 0.5);
+    box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.25);
+  }
+
+  .glass-input::placeholder {
+    color: #828282;
+  }
+}

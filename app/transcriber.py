@@ -26,6 +26,7 @@ from typing import Literal
 from app.config import (
     GEMINI_MODEL,
     GOOGLE_API_KEY,
+    GEMINI_TIMEOUT,
     WHISPER_COMPUTE_TYPE,
     WHISPER_DEVICE,
     WHISPER_MODEL,
@@ -60,6 +61,7 @@ class Transcriber:
         prompt_text: str,
         keywords: list[str],
         mode: TranscriptionMode = "auto",
+        on_chunk: callable = None,
     ) -> str:
         """Transcribe an audio file and return the resulting text.
 
@@ -78,7 +80,7 @@ class Transcriber:
         if mode == "whisper":
             # DEBUG - REMOVE LATER
             print("[DEBUG] Transcriber: modo forçado WHISPER")
-            return self._transcribe_whisper(audio_path, keywords)
+            return self._transcribe_whisper(audio_path, keywords, on_chunk)
 
         if mode == "gemini":
             online = self._is_online_fn()
@@ -88,7 +90,7 @@ class Transcriber:
                 raise TranscriptionError(
                     "Modo 'Forcar Google' selecionado, mas sem conexao com a internet."
                 )
-            return self._transcribe_gemini(audio_path, prompt_text, keywords)
+            return self._transcribe_gemini(audio_path, prompt_text, keywords, on_chunk)
 
         # mode == "auto"
         online = self._is_online_fn()
@@ -98,7 +100,7 @@ class Transcriber:
             try:
                 # DEBUG - REMOVE LATER
                 print("[DEBUG] Transcriber: tentando Gemini...")
-                result = self._transcribe_gemini(audio_path, prompt_text, keywords)
+                result = self._transcribe_gemini(audio_path, prompt_text, keywords, on_chunk)
                 # DEBUG - REMOVE LATER
                 print("[DEBUG] Transcriber: Gemini OK")
                 return result
@@ -109,14 +111,14 @@ class Transcriber:
                 )
         # DEBUG - REMOVE LATER
         print("[DEBUG] Transcriber: usando Whisper local")
-        return self._transcribe_whisper(audio_path, keywords)
+        return self._transcribe_whisper(audio_path, keywords, on_chunk)
 
     # ------------------------------------------------------------------
     # Gemini backend
     # ------------------------------------------------------------------
 
     def _transcribe_gemini(
-        self, audio_path: Path, prompt_text: str, keywords: list[str]
+        self, audio_path: Path, prompt_text: str, keywords: list[str], on_chunk: callable = None
     ) -> str:
         """Upload audio to Gemini Files API and request transcription."""
         try:
@@ -127,7 +129,10 @@ class Transcriber:
                 "google-genai nao instalado. Execute: uv add google-genai"
             ) from exc
 
-        client = genai.Client(api_key=GOOGLE_API_KEY)
+        client = genai.Client(
+            api_key=GOOGLE_API_KEY,
+            http_options=types.HttpOptions(timeout=GEMINI_TIMEOUT * 1000.0),
+        )
 
         # Build system instruction combining prompt text and glossary
         system_instruction = self._build_system_instruction(prompt_text, keywords)
@@ -142,17 +147,34 @@ class Transcriber:
 
         try:
             # SDK >= 1.0 simplified API: pass file object + string directly.
-            # The SDK auto-converts to the correct Part/Content types internally.
-            response = client.models.generate_content(
+            # Using generate_content_stream to get chunks directly as requested.
+            response_stream = client.models.generate_content_stream(
                 model=GEMINI_MODEL,
                 contents=[uploaded_file, "Transcreva o audio acima com precisao."],
                 config=types.GenerateContentConfig(
                     system_instruction=system_instruction,
                 ),
             )
+            
+            full_text_chunks = []
+            for chunk in response_stream:
+                if chunk and hasattr(chunk, "text") and chunk.text:
+                    full_text_chunks.append(chunk.text)
+                    if on_chunk:
+                        on_chunk(chunk.text)
+            
+            self._last_was_stream = True
+            final_text = "".join(full_text_chunks).strip()
             # DEBUG - REMOVE LATER
-            print(f"[DEBUG] Gemini: resposta recebida ({len(response.text)} chars)")
+            print(f"[DEBUG] Gemini: resposta recebida via stream ({len(final_text)} chars)")
+            return final_text
+
         except Exception as exc:
+            # Fallback for deadline exceeded and other API issues
+            from google.api_core.exceptions import DeadlineExceeded
+            if isinstance(exc, DeadlineExceeded) or "504" in str(exc):
+                raise TranscriptionError("A conexao expirou (504: DEADLINE_EXCEEDED).") from exc
+            
             raise TranscriptionError(f"Erro na requisicao ao Gemini: {exc}") from exc
         finally:
             # Best-effort cleanup of the uploaded file
@@ -161,7 +183,7 @@ class Transcriber:
             except Exception:
                 pass
 
-        return response.text.strip()
+        return final_text
 
     @staticmethod
     def _build_system_instruction(prompt_text: str, keywords: list[str]) -> str:
@@ -182,7 +204,7 @@ class Transcriber:
     # Whisper backend
     # ------------------------------------------------------------------
 
-    def _transcribe_whisper(self, audio_path: Path, keywords: list[str]) -> str:
+    def _transcribe_whisper(self, audio_path: Path, keywords: list[str], on_chunk: callable = None) -> str:
         """Transcribe using faster-whisper with lazy model loading.
 
         Handles CUDA runtime errors (e.g. libcublas not found) by falling
@@ -199,7 +221,15 @@ class Transcriber:
                 beam_size=5,
                 vad_filter=True,  # Remove silence automatically
             )
-            return " ".join(seg.text.strip() for seg in segments).strip()
+            self._last_was_stream = False
+            full_text = []
+            for seg in segments:
+                text = seg.text.strip()
+                if text:
+                    full_text.append(text)
+                    if on_chunk:
+                        on_chunk(text + " ")
+            return " ".join(full_text).strip()
         except Exception as exc:
             err_msg = str(exc)
             # ctranslate2 loads CUDA libs lazily — first .transcribe() may fail
@@ -224,7 +254,15 @@ class Transcriber:
                     )
                     # DEBUG - REMOVE LATER
                     print("[DEBUG] Whisper: transcricao em CPU (fallback) OK")
-                    return " ".join(seg.text.strip() for seg in segments).strip()
+                    self._last_was_stream = False
+                    full_text = []
+                    for seg in segments:
+                        text = seg.text.strip()
+                        if text:
+                            full_text.append(text)
+                            if on_chunk:
+                                on_chunk(text + " ")
+                    return " ".join(full_text).strip()
                 except Exception as cpu_exc:
                     raise TranscriptionError(
                         f"Whisper falhou em GPU e tambem em CPU: {cpu_exc}"
