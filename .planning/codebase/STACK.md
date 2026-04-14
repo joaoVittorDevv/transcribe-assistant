@@ -1,111 +1,111 @@
 # Technology Stack
 
-**Analysis Date:** 2026-04-13
+**Analysis Date:** 2026-04-14
 
 ## Languages
 
 **Primary:**
-- Python 3.12+ - Core application logic, UI, transcription, audio processing
+- Python 3.12+ - Backend, audio processing, transcription, agents
+- TypeScript 5.5 - Electron main/preload/renderer process
+
+**Secondary:**
+- Vue 3.5 (template) - Electron renderer UI components
+- CSS/Tailwind 3.4 - Styling in Electron UI
 
 ## Runtime
 
-**Environment:**
-- Python 3.12 (`.python-version`)
-- Package Manager: `uv` with `uv.lock`
+**Python Environment:**
+- Package Manager: `uv` (configured in `pyproject.toml`)
+- Lockfile: `uv.lock` present
+- Virtual environment: `.venv/` at project root
 
-**Virtual Environment:**
-- `.venv/` directory (PEP 405)
+**Node.js:**
+- Electron 32.0 - Desktop shell
+- Vite 5.4 - Build tool for renderer process
 
 ## Frameworks
 
-**UI (Primary):**
-- Flet >= 0.82.2 - Primary cross-platform UI framework
-- Location: `app/ui_flet/` (main_app.py, tab_manager.py, tab_transcription.py, vu_meter.py, markdown/)
+**Python Backend:**
+- FastAPI 0.115 - SSE server (`app/server.py`)
+- sounddevice 0.5.5 + soundfile 0.13.1 - Audio capture and file I/O
+- faster-whisper 1.2.1 - Local transcription (GPU/CPU)
+- google-genai 1.64.0 - Cloud transcription via Gemini API
+- python-dotenv 1.2.1 - Environment variable loading
 
-**UI (Legacy):**
-- CustomTkinter >= 5.2.2 - Legacy UI framework
-- Location: `app/ui/` (main_window.py, prompt_modal.py, sidebar.py, history_window.py)
+**Python UI (Legacy):**
+- CustomTkinter 5.2.2 - Legacy desktop UI
+- flet 0.82.2 - Alternative desktop UI
+
+**Electron UI (Current):**
+- electron 32.0 - Desktop application shell
+- electron-forge 7.4.0 - Build and packaging
+- @vitejs/plugin-vue 5.1.4 - Vue 3 support in Vite
+- vue 3.5.12 - UI framework
+- quill 2.0.2 - Rich text editor component
+- tailwindcss 3.4.13 - CSS framework
+- autoprefixer 10.4.20 - CSS vendor prefixes
+
+## Key Dependencies
 
 **Transcription:**
-- faster-whisper >= 1.2.1 - Local transcription engine (GPU/CPU)
-- google-genai >= 1.64.0 - Cloud transcription via Google Gemini API
+- `faster-whisper>=1.2.1` - Local Whisper inference with VRAM optimization
+- `google-genai>=1.64.0` - Gemini API client for cloud transcription
 
 **Audio:**
-- sounddevice >= 0.5.5 - Audio recording from microphone
-- soundfile >= 0.13.1 - Audio file I/O (WAV format)
+- `sounddevice>=0.5.5` - PortAudio-based audio input
+- `soundfile>=0.13.1` - Audio file reading/writing (WAV format)
 
-**AI/Agents:**
-- Agno framework - Agent-based transcription orchestration (referenced in memory)
-- Note: agents directory exists at `app/agents/` but appears empty
+**Desktop UI:**
+- `flet>=0.82.2` - Cross-platform UI (primary alongside Electron)
+- `customtkinter>=5.2.2` - Tkinter-based UI (legacy)
 
-**Markdown:**
-- markdown >= 3.10.2 - Markdown parsing and rendering
+**Server:**
+- `fastapi>=0.115.0` - Web framework for SSE backend
+- `uvicorn[standard]>=0.34.0` - ASGI server
 
-**Image/Assets:**
-- Pillow >= 12.1.1 - Image processing for assets
+## Build & Development Tools
 
-**Configuration:**
-- python-dotenv >= 1.2.1 - Environment variable loading from `.env`
+**Python:**
+- `black>=26.1.0` - Code formatter (line-length: 88)
+- `pytest>=8.0` - Testing framework
+- `pytest-asyncio>=0.25.0` - Async test support
+- `httpx>=0.28.0` - HTTP client for tests
 
-**Internationalization:**
-- python-i18n >= 0.3.9 - Multi-language support
-- Locale files: `locales/` directory
-
-**Numeric/Array:**
-- numpy >= 2.4.2 - Numerical operations (audio processing)
-
-**Electron (Secondary):**
-- Electron - Desktop packaging (referenced in `electron/` directory)
-- Node.js dependencies in `electron/node_modules/`
-
-## Development Tools
-
-**Formatter:**
-- black >= 26.1.0 - Code formatter (line-length: 88, excludes `.agent`, `.venv`, `docs`)
-
-## Key Dependencies (from pyproject.toml)
-
-**Core:**
-- `flet>=0.82.2` - UI framework
-- `faster-whisper>=1.2.1` - Local transcription
-- `google-genai>=1.64.0` - Cloud transcription API
-- `sounddevice>=0.5.5` - Audio recording
-- `soundfile>=0.13.1` - Audio file handling
-
-**UI/Display:**
-- `customtkinter>=5.2.2` - Legacy UI
-- `markdown>=3.10.2` - Markdown rendering
-- `pillow>=12.1.1` - Image handling
-
-**Support:**
-- `numpy>=2.4.2` - Numerical operations
-- `python-dotenv>=1.2.1` - Env config
-- `python-i18n>=0.3.9` - i18n
+**Electron:**
+- `electron-forge` plugins - Vite integration, makers for distribution
+- `vue-tsc` - TypeScript type-checking for Vue
 
 ## Configuration
 
+**Python Formatter:**
+- Tool: `black`
+- Config: `pyproject.toml` (line-length: 88)
+- Excludes: `.agent`, `.venv`, `docs` directories
+
+**Electron Build:**
+- Vite configs: `vite.main.config.ts`, `vite.preload.config.ts`, `vite.renderer.config.ts`
+- Forge config: `electron/forge.config.ts`
+- Tailwind: `electron/tailwind.config.js`
+- PostCSS: `electron/postcss.config.js`
+- TypeScript: `electron/tsconfig.json`
+
 **Environment:**
-- `.env` file at project root - Contains API keys and runtime settings
+- `.env` at project root - Runtime secrets and config
 - `.env.example` - Template with documented variables
+- `python-dotenv` for loading environment variables
 
-**Key environment variables:**
-- `GOOGLE_API_KEY` - Google Gemini API key (required)
-- `GEMINI_MODEL` - Model selection (default: gemini-2.0-flash)
-- `WHISPER_MODEL` - Local model size (default: base)
-- `WHISPER_DEVICE` - cuda or cpu (default: cpu)
-- `WHISPER_COMPUTE_TYPE` - float16/int8/float32 (default: int8)
-- `DATABASE_PATH` - SQLite database path
-- `APP_LANGUAGE` - UI language (default: pt)
+## Platform Requirements
 
-## Platform
+**Development:**
+- Python 3.12+
+- Node.js (Electron build)
+- `uv` package manager
+- PortAudio (system library for sounddevice)
 
-**Desktop:**
-- Electron for desktop application packaging
-- Dual UI system: Flet (primary) + CustomTkinter (legacy)
-
-**Database:**
-- SQLite (`transcriber_data.db`) - Local persistent storage
+**Production:**
+- Electron distributable (Windows/macOS/Linux)
+- SQLite database file at `DATABASE_PATH`
 
 ---
 
-*Stack analysis: 2026-04-13*
+*Stack analysis: 2026-04-14*

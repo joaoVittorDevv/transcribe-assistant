@@ -1,135 +1,137 @@
 # Architecture
 
-**Analysis Date:** 2026-04-13
+**Analysis Date:** 2026-04-14
 
 ## Pattern Overview
 
-**Overall:** Layered desktop application with a service-oriented backend and dual UI frontends (legacy CustomTkinter + active Flet).
+**Overall:** Multi-process Electron app with Python backend subprocesses
 
 **Key Characteristics:**
-- Strict startup validation: `app.config` is imported before any UI is constructed; a missing required env var aborts with a non-zero exit code.
-- Backend services are framework-agnostic: `AudioRecorder`, `Transcriber`, and `NetworkMonitor` carry no UI imports.
-- Transcription is dispatched in a background `threading.Thread` so the UI thread remains responsive.
-- Gemini streaming is exposed via an `on_chunk` callback, letting the UI receive incremental text without polling.
+- Electron main process spawns two Python subprocesses (server + audio engine)
+- Vue 3 renderer communicates with main via contextBridge IPC
+- FastAPI SSE server streams transcription to renderer over HTTP
+- Audio captured in separate subprocess, WAV path forwarded via IPC
 
 ## Layers
 
-**Configuration:**
-- Purpose: Load `.env`, validate required keys, expose typed constants, initialize i18n locale.
-- Location: `app/config.py`
-- Depends on: `python-dotenv`, `i18n` library
-- Used by: every other module that needs a setting
+**Electron Main Process:**
+- Purpose: Application lifecycle, window management, subprocess spawning
+- Location: `electron/src/main/index.ts`
+- Contains: Window creation, IPC handlers, Python subprocess management
+- Depends on: Electron APIs (BrowserWindow, ipcMain, dialog)
+- Spawns: `app.server` (FastAPI) and `app/audio_engine.py`
 
-**Core Services (Backend):**
-- Purpose: Audio capture, transcription routing, network polling — all UI-independent.
-- Location: `app/audio_recorder.py`, `app/transcriber.py`, `app/network_monitor.py`, `app/audio_validator.py`
-- Depends on: `app/config.py`, `sounddevice`, `soundfile`, `numpy`, `faster-whisper`, `google-genai`
-- Used by: UI layer (both Flet and CustomTkinter)
+**Electron Preload:**
+- Purpose: Secure bridge between main and renderer (context isolation)
+- Location: `electron/src/preload/index.ts`
+- Exposes: `electronAPI` with audioCommand, onRmsUpdate, onAudioStatus, openFilePicker, readFile
 
-**Persistence:**
-- Purpose: SQLite CRUD for prompts, glossary keywords, and transcription sessions.
-- Location: `app/database.py`
-- Depends on: `app/config.py` (for `DATABASE_PATH`)
-- Used by: UI layer (Sidebar loads prompts; history windows query sessions)
+**Vue Renderer:**
+- Purpose: UI state management and user interaction
+- Location: `electron/src/renderer/`
+- Contains: Vue components, composables (useTranscriptionState, useTabs, useEditor)
+- Communicates via: window.electronAPI
 
-**UI — Flet (primary):**
-- Purpose: Active production UI built with the Flet framework.
-- Location: `app/ui_flet/`
-- Depends on: all core services, `app/database.py`, `flet`
-- Entry point: `main_flet.py` → `app/ui_flet/main_app.py::init_app(page)`
+**Python Server (FastAPI):**
+- Purpose: SSE transcription endpoint, session management
+- Location: `app/server.py`
+- Contains: POST /transcribe (streaming), GET /transcribe/status/{id}, DELETE /transcribe/{id}
+- Depends on: `app.transcriber`, `app.network_monitor`, `app.database`
 
-**UI — CustomTkinter (legacy):**
-- Purpose: Original desktop UI, kept for reference during migration.
-- Location: `app/ui/`
-- Entry point: `main.py` → `app/ui/main_window.py::MainWindow`
+**Python Audio Engine:**
+- Purpose: Standalone audio capture subprocess
+- Location: `app/audio_engine.py`
+- Controlled via: stdin JSON commands (start/stop)
+- Emits: stdout JSON lines with RMS values and status events
+- Depends on: `app.audio_recorder.AudioRecorder`
 
-**Utilities:**
-- Purpose: Shared helpers not tied to a specific layer.
-- Location: `app/utils/`
-- Contains: `i18n_manager.py` (runtime locale switching), `clipboard_manager.py`
+**Transcriber:**
+- Purpose: AI transcription router (Gemini cloud vs faster-whisper local)
+- Location: `app/transcriber.py`
+- Modes: auto (fallback), gemini (force cloud), whisper (force local)
+- Lazy-loads Whisper model on first use; auto-fallbacks GPU->CPU
 
 ## Data Flow
 
-**Recording and Transcription:**
+**Recording Flow:**
+1. Renderer calls `api.audioCommand({ action: 'start', mode: 'mic' })`
+2. Main process forwards to audio engine subprocess via stdin
+3. Audio engine starts recording, emits RMS to stdout
+4. Main process parses stdout, forwards RMS via `webContents.send('rms-update')`
+5. Renderer receives RMS via `onRmsUpdate` callback
 
-1. User clicks Record in `FletApp` (`app/ui_flet/main_app.py`).
-2. `FletApp._start_recording()` calls `AudioRecorder.start_recording(mode)`.
-3. `sounddevice.InputStream` fires `_audio_callback` per block; RMS is computed and sent via `on_rms_update` callback to the VU meter widget (`app/ui_flet/vu_meter.py`).
-4. User clicks Stop; `FletApp._stop_recording()` calls `AudioRecorder.stop_recording()`, which flushes frames to a temp `.wav` file.
-5. A `threading.Thread` runs `_transcribe_worker(wav_path)`.
-6. `_transcribe_worker` reads the active prompt and keywords from `Sidebar`, then calls `Transcriber.transcribe(wav_path, prompt_text, keywords, mode, on_chunk)`.
-7. `Transcriber` checks `NetworkMonitor.is_online` and routes to Gemini or Whisper.
-8. Gemini: audio uploaded via Files API, `generate_content_stream` yields chunks → `on_chunk` callback writes each chunk to the active tab's editor (`TabManager.insert_text_active`).
-9. Whisper: `WhisperModel.transcribe` returns segments; full text inserted at once after stream completes.
-10. `FletApp._reset_recording_ui()` restores button states on the main thread via `page.update()`.
-
-**File Upload (non-recording):**
-
-1. User clicks the upload button → `open_audio_file()` opens a native file dialog.
-2. Selected path is stored in `FletApp._current_audio_path`.
-3. When Stop/Transcribe is clicked, `_stop_recording` uses the stored path instead of calling `AudioRecorder.stop_recording()`.
-4. Transcription proceeds identically from step 5 above.
-
-**State Management:**
-- No global state store. Each `FletApp` instance owns references to its service objects.
-- UI state (recording flag, timer, current audio path) is held as instance attributes on `FletApp`.
-- Persistent state (prompts, sessions) lives in SQLite via `app/database.py`.
+**Stop and Transcribe Flow:**
+1. Renderer calls `api.audioCommand({ action: 'stop' })`
+2. Audio engine writes WAV file, emits status with `wav_path` to stdout
+3. Main process forwards via `webContents.send('audio-status', msg)`
+4. Renderer receives status, extracts `pendingWavPath`
+5. Renderer POSTs WAV path to FastAPI `/transcribe` SSE endpoint
+6. SSE stream delivers transcription chunks
+7. Renderer accumulates chunks, updates tab content via `updateContent`
 
 ## Key Abstractions
 
-**Transcriber:**
-- Purpose: Routes audio to the appropriate transcription backend, hiding backend selection from callers.
-- File: `app/transcriber.py`
-- Pattern: Strategy pattern — `mode` arg selects "auto" | "gemini" | "whisper"; auto mode falls back from Gemini to Whisper on network failure. Whisper model is lazy-loaded on first use.
+**ElectronAPI (preload bridge):**
+- Purpose: Type-safe IPC interface exposed to renderer
+- File: `electron/src/preload/index.ts`
+- Pattern: contextBridge.exposeInMainWorld with typed interface
 
-**AudioRecorder:**
-- Purpose: Abstracts microphone vs. system-audio capture into a uniform `start_recording(mode)` / `stop_recording() -> Path` API.
-- File: `app/audio_recorder.py`
-- Pattern: Two capture backends (sounddevice InputStream for mic; `parec` subprocess for Linux system audio). Both feed the same `_audio_callback` for RMS computation.
+**TranscriptionState composable:**
+- Purpose: Reactive recording/transcription state machine
+- Location: `electron/src/renderer/composables/useTranscriptionState.ts`
+- States: IDLE | RECORDING | TRANSCRIBING
 
-**NetworkMonitor:**
-- Purpose: Provides a stable `is_online: bool` property updated by a background daemon thread.
-- File: `app/network_monitor.py`
-- Pattern: Observer — calls `on_status_change(bool)` callback only when status transitions.
-
-**TabManager:**
-- Purpose: Manages multiple transcription tabs, exposing `insert_text_active(text)` for thread-safe text insertion into the currently active tab.
-- File: `app/ui_flet/tab_manager.py`
-
-**Sidebar:**
-- Purpose: Displays and manages user-defined prompts (with glossary keywords); exposes `get_active_prompt() -> dict` to callers.
-- File: `app/ui_flet/sidebar.py`
+**Server session registry:**
+- Purpose: In-memory session tracking for SSE resume
+- Location: `app/server.py` (_active_sessions dict)
+- Pattern: Thread-safe with _session_lock
 
 ## Entry Points
 
-**Flet UI (primary):**
-- Location: `main_flet.py`
-- Triggers: `uv run python main_flet.py`
-- Responsibilities: Validate config, initialize DB, call `ft.run(main, assets_dir="assets")` which hands a `ft.Page` to `init_app`.
+**Electron Main:**
+- Location: `electron/src/main/index.ts`
+- Triggers: app.whenReady()
+- Responsibilities: Window creation, IPC setup, subprocess spawning
 
-**CustomTkinter UI (legacy):**
-- Location: `main.py`
-- Triggers: `uv run main.py`
-- Responsibilities: Validate config, initialize DB, construct `MainWindow` and start the Tk mainloop.
+**Python Server:**
+- Location: `app/server.py`
+- Triggers: `uv run python -m app.server`
+- Responsibilities: SSE streaming endpoint on port 18763
+
+**Audio Engine:**
+- Location: `app/audio_engine.py`
+- Triggers: Spawned by main process
+- Responsibilities: Audio capture, RMS calculation, WAV output
+
+**Vue Renderer:**
+- Location: `electron/src/renderer/main.ts`
+- Triggers: Vite dev server or loaded HTML
+- Responsibilities: Vue app bootstrap, component rendering
 
 ## Error Handling
 
-**Strategy:** Fail-fast at startup (config validation), graceful degradation at runtime (Gemini → Whisper fallback).
+**Strategy:** Layer-specific error propagation
 
-**Patterns:**
-- `app/config.py` raises `RuntimeError` for missing required vars; both entry points catch it, print to stderr, and call `sys.exit(1)`.
-- `Transcriber` wraps backend calls in `TranscriptionError`; auto mode silently falls back to Whisper; forced-mode raises to the caller.
-- `AudioRecorder` CUDA load failures trigger an automatic CPU retry with `int8` compute type.
-- UI workers catch `Exception` broadly and log to stdout (several `[DEBUG]` prints marked for removal).
+**Audio Engine:**
+- JSON parse errors on stdout lines: ignored
+- Subprocess exit: auto-restart after 500ms if window still open
+
+**FastAPI Server:**
+- 100MB file size limit (streaming read)
+- Transcription errors: yielded as `[ERROR]` SSE frame
+- Session not found: HTTPException 404
+
+**Transcriber:**
+- Gemini API errors: raise TranscriptionError (triggers fallback in auto mode)
+- Whisper CUDA failures: auto-retry on CPU
+- Network offline: raise error in gemini mode, fallback to whisper in auto mode
 
 ## Cross-Cutting Concerns
 
-**Logging:** `print()` statements with `[DEBUG]` prefix throughout core services; no structured logging library.
-**Validation:** `app/audio_validator.py` gates file-upload paths; `app/config.py` gates startup.
-**Authentication:** API key injected via `GOOGLE_API_KEY` env var; read once at import time from `app/config.py`.
-**Internationalization:** `python-i18n` library with JSON locale files in `locales/`; locale set at startup, switchable at runtime via `i18n_manager.py`.
-**Threading:** All long-running work (recording, transcription) runs in `daemon=True` threads; Flet UI updated via `page.update()` from worker threads.
+**Logging:** Print statements to stdout/stderr (main process captures Python stdout)
+**Validation:** 100MB max file size in server.py; audio format filter in file dialog
+**Authentication:** API keys via environment variables (GEMINI_API_KEY, GOOGLE_API_KEY)
 
 ---
 
-*Architecture analysis: 2026-04-13*
+*Architecture analysis: 2026-04-14*

@@ -1,79 +1,125 @@
 # Testing Patterns
 
-**Analysis Date:** 2026-04-13
+**Analysis Date:** 2026-04-14
 
 ## Test Framework
 
-**Runner:** Not configured.
-- No `pytest.ini`, `conftest.py`, `jest.config.*`, or `vitest.config.*` detected in project root or `app/`.
-- No test dependencies in `pyproject.toml` (`[dependency-groups]` contains only `black`).
+**Python:**
+- Runner: pytest 8.0+
+- Async: pytest-asyncio 0.25.0+
+- HTTP: httpx 0.28.0 (ASGITransport for FastAPI testing)
 
-**Assertion Library:** None configured.
+**Dev Dependencies (from `pyproject.toml`):**
+```toml
+[dependency-groups]
+dev = [
+    "black>=26.1.0",
+    "httpx>=0.28.0",
+    "pytest>=8.0",
+    "pytest-asyncio>=0.25.0",
+]
+```
 
 **Run Commands:**
 ```bash
-# No test runner configured — no test command available
+pytest                          # Run all tests
+pytest tests/test_server_sse.py  # Run specific file
 ```
 
 ## Test File Organization
 
-**Location:** No test files exist in the project source tree (`app/` has no `test_*.py` or `*_test.py` files).
+**Location:** `tests/` directory at project root
 
-**Naming:** Not applicable — no tests present.
+**Naming:** `test_*.py` pattern
 
-## Test Types
+**Current Test Files:**
+- `tests/test_server_sse.py` — SSE endpoint tests
 
-**Unit Tests:** Not present.
+## Test Structure
 
-**Integration Tests:** Not present.
+**FastAPI SSE Testing Pattern:**
+```python
+from httpx import ASGITransport, AsyncClient
 
-**E2E Tests:** Not present.
-
-## CI/CD Pipeline
-
-**GitHub Actions:** No `.github/workflows/` directory exists in the project root. No CI pipeline is configured.
-
-**Deployment:** Not automated. No CD configuration detected.
-
-## Coverage
-
-**Requirements:** None enforced.
-
-**Coverage tooling:** Not configured.
-
-## What Exists Instead of Tests
-
-Network connectivity validation is performed at runtime via `app/network_monitor.py`. Audio input validation is performed at runtime via `app/audio_validator.py`. These are runtime guards, not automated tests.
-
-One historical commit (`bbed616`) mentions "network connectivity tests" — this refers to runtime checks, not an automated test suite.
-
-## Recommendations for Adding Tests
-
-When tests are added, follow this structure:
-
-**Framework to add:** `pytest` (compatible with existing `uv` + Python 3.12 setup)
-
-```bash
-# Add to pyproject.toml dev dependencies:
-uv add --dev pytest pytest-asyncio
+@pytest.mark.asyncio
+async def test_transcribe_endpoint_returns_sse_media_type():
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+        timeout=10.0,
+    ) as client:
+        response = await client.post("/transcribe", ...)
 ```
 
-**Suggested layout:**
-```
-tests/
-├── conftest.py          # Shared fixtures
-├── test_transcriber.py  # Unit tests for app/transcriber.py
-├── test_config.py       # Unit tests for app/config.py
-├── test_database.py     # Unit tests for app/database.py
-└── test_audio_validator.py
+**Fixtures:**
+```python
+@pytest.fixture(autouse=True)
+def setup_db():
+    initialize_db()
+    yield
 ```
 
-**Mock targets when testing:**
-- `app.transcriber.Transcriber` — mock `is_online_fn` callable
-- `google.genai` client — mock for Gemini transcription tests
-- `faster_whisper.WhisperModel` — mock for local transcription tests
-- `sounddevice` — mock for audio recording tests
+## Mocking Patterns
+
+**Async Generator Mocking:**
+```python
+async def mock_transcribe_events(session_id, audio_path, prompt_text, keywords, mode):
+    from app.server import _sse_frame
+    yield _sse_frame("chunk", "test chunk")
+    yield _sse_frame("chunk", "[DONE]")
+
+with patch("app.server._transcription_events", mock_transcribe_events):
+    ...
+```
+
+**Mock Targets:**
+- `app.server._transcription_events` — SSE stream generation
+- `app.transcriber.Transcriber` — transcription logic
+- `google.genai` client — cloud transcription
+
+## Audio Testing
+
+**Challenges:**
+- Real transcription is slow (depends on model loading)
+- Hardware-dependent (microphone, speakers)
+
+**Approach:**
+- Mock transcription layer entirely
+- Test audio format parsing with synthetic WAV files
+- Test file upload size limits
+
+**WAV Fixture Pattern:**
+```python
+def make_silent_wav() -> io.BytesIO:
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(44100)
+        w.writeframes(struct.pack("<h", 0) * 44100)
+    buf.seek(0)
+    return buf
+```
+
+## Current Test Coverage
+
+**Covered:**
+- `/transcribe` endpoint — SSE content-type validation
+- `/transcribe/status/{session_id}` — 404 for unknown sessions
+- `/transcribe/{session_id}` (DELETE) — idempotent cancel behavior
+
+**Not Covered:**
+- Database operations
+- Audio recording hardware
+- Transcription engine accuracy
+- Electron IPC handlers
+
+## CI/CD
+
+**Status:** Not configured
+- No GitHub Actions workflows
+- No automated test pipeline
 
 ---
 
-*Testing analysis: 2026-04-13*
+*Testing analysis: 2026-04-14*

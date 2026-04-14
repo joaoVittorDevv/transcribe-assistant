@@ -1,105 +1,130 @@
 # External Integrations
 
-**Analysis Date:** 2026-04-13
+**Analysis Date:** 2026-04-14
 
 ## APIs & External Services
 
-**Transcription - Cloud:**
-- Google Gemini API - Cloud-based audio transcription
+**Cloud Transcription:**
+- Google Gemini API - Primary cloud transcription backend
   - SDK: `google-genai>=1.64.0`
   - Auth: `GOOGLE_API_KEY` environment variable
-  - Endpoint: Google AI Studio (https://aistudio.google.com/app/apikey)
-  - Model: Configurable via `GEMINI_MODEL` (default: gemini-2.0-flash)
-  - Features: Audio file upload, streaming responses, system instruction injection
+  - Model: Configurable via `GEMINI_MODEL` (default: `gemini-2.0-flash`)
+  - Features: Files API upload, streaming responses, system instruction injection
   - Timeout: Configurable via `GEMINI_TIMEOUT` (default: 60s)
 
-**Transcription - Local:**
-- faster-whisper - Local neural transcription (no external API)
-  - Model sizes: tiny | base | small | medium | large-v3
-  - Device: CUDA (GPU) or CPU fallback
-  - Compute types: float16 (GPU), int8 (low VRAM), float32 (CPU)
+**Local Transcription:**
+- faster-whisper - Local Whisper inference
+  - Model: Configurable via `WHISPER_MODEL` (default: `base`)
+  - Device: `WHISPER_DEVICE` (`cuda` or `cpu`)
+  - Compute type: `WHISPER_COMPUTE_TYPE` (`float16`, `int8`, `float32`)
+  - Fallback: Automatic CPU fallback if CUDA libraries unavailable
+
+**Network Monitoring:**
+- Connectivity check via DNS ping to `NETWORK_PING_HOST:NETWORK_PING_PORT`
+  - Default: `8.8.8.8:53` (Google DNS)
+  - Interval: Configurable via `NETWORK_CHECK_INTERVAL` (default: 10s)
+  - Used by: `app/network_monitor.py` to determine online/offline status
 
 ## Data Storage
 
-**Database:**
-- SQLite - Local file-based database
-  - Location: `transcriber_data.db` (or custom path via `DATABASE_PATH`)
-  - Client: Native Python sqlite3
-  - Purpose: Transcription history, sessions, prompts
+**SQLite Database:**
+- Engine: Python `sqlite3` (standard library)
+- Location: `DATABASE_PATH` env var (default: `transcriber_data.db` at project root)
+- Schema: Defined in `app/database.py`
+- Purpose: Session storage, transcription history
 
-**File Storage:**
-- Local filesystem only - Audio files saved locally
-- Audio format: WAV (via sounddevice + soundfile)
+## Audio Hardware Integration
+
+**Audio Capture:**
+- Library: `sounddevice` (PortAudio bindings)
+- Recording modes: `mic` (microphone), `system` (system audio)
+- Implementation: `app/audio_recorder.py`
+- Subprocess: `app/audio_engine.py` runs as standalone process
+
+**Audio File I/O:**
+- Library: `soundfile`
+- Format: WAV
+- Purpose: Recording output, transcription input
+
+**RMS Monitoring:**
+- Real-time audio level streaming via subprocess IPC
+- JSON messages on stdout: `{"type": "rms", "value": <float>}`
+- Forwarded from audio_engine to renderer via Electron IPC
+
+## IPC Between Processes (Electron)
+
+**Architecture:**
+- Main process (`electron/src/main/index.ts`) - Orchestrates subprocesses
+- Preload script (`electron/src/preload/index.ts`) - Secure IPC bridge
+- Renderer process - Vue 3 UI components
+
+**Subprocesses Managed by Main:**
+1. **FastAPI SSE Server** - `uv run python -m app.server`
+   - Communicates via stdio
+   - Handles SSE transcription streaming
+
+2. **Audio Engine** - `uv run python app/audio_engine.py`
+   - Controlled via stdin JSON commands
+   - Emits JSON lines to stdout (RMS updates, status)
+   - Auto-restarts after exit if window still open
+
+**IPC Channels:**
+- `audio-command` - Send commands to audio_engine (start/stop)
+- `rms-update` - Real-time audio level from audio_engine to renderer
+- `audio-status` - Recording state and wav_path on stop
+- `open-file-dialog` - Native file picker for audio files
+- `read-file` - Read file contents for transcription
+
+**Preload API** (`window.electronAPI`):
+```typescript
+audioCommand(cmd: { action: string; mode?: string }): void
+onRmsUpdate(callback: (value: number) => void): () => void
+onAudioStatus(callback: (status: AudioStatus) => void): () => void
+openFilePicker(accept: string[]): Promise<string | null>
+readFile(path: string): Promise<ArrayBuffer | null>
+```
 
 ## Authentication & Identity
 
-**API Authentication:**
-- Google Gemini API key-based authentication
-  - Env var: `GOOGLE_API_KEY`
-  - Managed via: `python-dotenv` loading from `.env`
+**API Key Management:**
+- `GOOGLE_API_KEY` - Gemini API key (required)
+- Stored in `.env` at project root
+- Loaded via `python-dotenv` in `app/config.py`
 
-## Network Dependencies
+## Monitoring & Observability
 
-**Internet Connectivity:**
-- Required for: Google Gemini cloud transcription
-- Optional for: faster-whisper local transcription (works offline)
-- Monitoring: `NetworkMonitor` class pings `NETWORK_PING_HOST:NETWORK_PING_PORT` (default: 8.8.8.8:53)
-- Check interval: Configurable via `NETWORK_CHECK_INTERVAL` (default: 10s)
+**Error Tracking:**
+- Debug prints to stderr/stdout in development
+- No external error tracking service configured
 
-**Network Checks:**
-- Used by: Transcriber to determine auto/gemini mode routing
-- Auto mode: Falls back to local Whisper when offline
+**Logging:**
+- Python: print statements to stdout/stderr
+- Electron main: `[sse-server]` and `[audio-engine]` prefixed output
+- Renderer: Browser console
 
 ## CI/CD & Deployment
 
-**Desktop Packaging:**
-- Electron - Desktop application bundling
-  - Directory: `electron/`
-  - Dependencies: `electron/node_modules/`
+**Electron Distribution:**
+- electron-forge with makers for deb, rpm, squirrel, zip
+- Build commands: `npm run package`, `npm run make`
 
-**Package Manager:**
-- uv - Python package management
-  - Lockfile: `uv.lock`
+**Python Backend:**
+- Packaged with Electron as subprocesses
+- Uses `uv` for dependency resolution
 
 ## Environment Configuration
 
 **Required env vars:**
-- `GOOGLE_API_KEY` - Google Gemini API key (required for cloud transcription)
-
-**Optional env vars:**
-- `GEMINI_MODEL` - Model name (default: gemini-2.0-flash)
-- `GEMINI_TIMEOUT` - API timeout in seconds (default: 60.0)
-- `WHISPER_MODEL` - Local model size (default: base)
-- `WHISPER_DEVICE` - cuda or cpu (default: cpu)
-- `WHISPER_COMPUTE_TYPE` - float16, int8, or float32 (default: int8)
-- `NETWORK_PING_HOST` - Connectivity check host (default: 8.8.8.8)
-- `NETWORK_PING_PORT` - Connectivity check port (default: 53)
-- `NETWORK_CHECK_INTERVAL` - Seconds between checks (default: 10)
-- `DATABASE_PATH` - SQLite file path
-- `APP_LANGUAGE` - UI language code (default: pt)
+- `GOOGLE_API_KEY` - Gemini API authentication
+- `GEMINI_MODEL` - Model identifier (optional, has default)
+- `WHISPER_MODEL` - Local model size (optional, has default)
+- `WHISPER_DEVICE` - cuda/cpu (optional, has default)
+- `WHISPER_COMPUTE_TYPE` - Precision type (optional, has default)
+- `DATABASE_PATH` - SQLite file location (optional, has default)
 
 **Secrets location:**
 - `.env` file at project root (NOT committed to git)
 
-## Internal Module Dependencies
-
-**Config Module:**
-- `app/config.py` - Single source of truth for environment variables
-- Loads `.env` via `python-dotenv`
-- Validates required vars on import
-
-**Key modules:**
-- `app/transcriber.py` - Routes between Gemini/Whisper based on connectivity
-- `app/audio_recorder.py` - Audio capture via sounddevice
-- `app/database.py` - SQLite operations
-- `app/network_monitor.py` - Internet connectivity monitoring
-
-## Webhooks & Callbacks
-
-**Internal callbacks:**
-- `on_chunk` callback in Transcriber - Streams transcription chunks to UI
-- Network monitor callback system for connectivity changes
-
 ---
 
-*Integration audit: 2026-04-13*
+*Integration audit: 2026-04-14*
