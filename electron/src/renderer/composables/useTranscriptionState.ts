@@ -65,20 +65,11 @@ export function useTranscriptionState() {
             try {
               const parsed = JSON.parse(dataStr);
               const text = typeof parsed === 'string' ? parsed : parsed.text ?? '';
-              // Smart insertion: if we have accumulated text and the new chunk
-              // doesn't start with whitespace, prepend a space to avoid concatenation
-              const needsSpace = accumulated.length > 0 && text.length > 0 && !/^\s/.test(text);
-              const insertText = needsSpace ? ' ' + text : text;
-              accumulated += insertText;
-              api.insertTextAtCursor(insertText);
-              quillCursorIndex += insertText.length;
+              // Backend sends complete words with trailing whitespace (word-boundary buffering)
+              api.insertTextAtCursor(text);
             } catch {
-              // Server sends raw text chunks not wrapped in JSON — treat as plain text
-              const needsSpace = accumulated.length > 0 && dataStr.length > 0 && !/^\s/.test(dataStr);
-              const insertText = needsSpace ? ' ' + dataStr : dataStr;
-              accumulated += insertText;
-              api.insertTextAtCursor(insertText);
-              quillCursorIndex += insertText.length;
+              // Server sends raw text chunks not wrapped in JSON — insert directly
+              api.insertTextAtCursor(dataStr);
             }
           }
         }

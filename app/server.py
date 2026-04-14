@@ -54,6 +54,58 @@ def _sse_frame(event: str, data: str) -> bytes:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Word-boundary buffering
+# ---------------------------------------------------------------------------
+
+
+def _extract_word_chunks(buffer: str) -> tuple[str, str]:
+    """
+    Extract complete word+whitespace chunks from the front of buffer.
+    Returns (text_to_emit, remaining_buffer).
+    A complete chunk = word followed by whitespace (complete word).
+    Incomplete trailing word stays in remaining_buffer.
+    """
+    if not buffer:
+        return "", ""
+
+    # Walk through buffer, collecting complete chunks
+    emit_parts = []
+    i = 0
+    n = len(buffer)
+
+    while i < n:
+        # Skip whitespace runs and collect them
+        if buffer[i].isspace():
+            start = i
+            while i < n and buffer[i].isspace():
+                i += 1
+            emit_parts.append(buffer[start:i])
+            continue
+
+        # Word (non-whitespace chars)
+        start = i
+        while i < n and not buffer[i].isspace():
+            i += 1
+        word = buffer[start:i]
+
+        # Only emit the word if it is followed by whitespace (i.e., it's complete)
+        if i < n:
+            emit_parts.append(word)
+        # If i >= n, word is at the end without trailing whitespace — incomplete, keep in buffer
+
+    emit_text = "".join(emit_parts)
+
+    # Residual = everything in buffer after the last emitted character
+    # Last complete chunk ends at last_emitted_idx
+    last_emitted_idx = 0
+    for part in emit_parts:
+        last_emitted_idx += len(part)
+    residual = buffer[last_emitted_idx:]
+
+    return emit_text, residual
+
+
 async def _transcription_events(
     session_id: str,
     audio_path: Path,
@@ -99,6 +151,7 @@ async def _transcription_events(
     with _session_lock:
         _active_sessions[session_id]["status"] = "streaming"
 
+    word_buffer = ""
     accumulated = ""
 
     try:
@@ -106,12 +159,30 @@ async def _transcription_events(
             item = await queue.get()
             if item is None:
                 break
-            accumulated += item
+
+            # Append to word buffer
+            word_buffer += item
+
+            # Extract and emit only complete words (word + trailing whitespace)
+            # Incomplete words at the end stay in word_buffer
+            emit_text, word_buffer = _extract_word_chunks(word_buffer)
+
+            if emit_text:
+                accumulated += emit_text
+                with _session_lock:
+                    if session_id in _active_sessions:
+                        _active_sessions[session_id]["accumulated_text"] = accumulated
+                yield _sse_frame("chunk", emit_text)
+                logger.debug("chunk: %s", emit_text[:50])
+
+        # Flush any remaining incomplete word at the end
+        if word_buffer:
+            accumulated += word_buffer
             with _session_lock:
                 if session_id in _active_sessions:
                     _active_sessions[session_id]["accumulated_text"] = accumulated
-            yield _sse_frame("chunk", item)
-            logger.debug("chunk: %s", item[:50])
+            yield _sse_frame("chunk", word_buffer)
+            logger.debug("chunk (flush): %s", word_buffer[:50])
     except asyncio.CancelledError:
         logger.info("SSE stream cancelled for session %s", session_id)
         with _session_lock:
