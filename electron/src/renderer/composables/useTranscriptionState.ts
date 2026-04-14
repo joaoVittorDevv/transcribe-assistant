@@ -14,17 +14,25 @@ let cleanupStatus: (() => void) | null = null;
 // Captured WAV path returned by audio_engine on stop
 let pendingWavPath: string | null = null;
 
+let quillCursorIndex = 0;
+
 export function useTranscriptionState() {
   const { activeTabId, updateContent } = useTabs();
   const api = window.electronAPI as ElectronAPI;
 
   async function transcribeFile(wavPath: string) {
     let accumulated = '';
+    quillCursorIndex = 0;
     try {
+      const arrayBuffer = await api.readFile(wavPath);
+      if (!arrayBuffer) throw new Error('Failed to read audio file');
+
+      const formData = new FormData();
+      formData.append('audio', new Blob([arrayBuffer], { type: 'audio/wav' }), 'audio.wav');
+
       const response = await fetch(`http://localhost:18763/transcribe`, {
         method: 'POST',
-        body: JSON.stringify({ wav_path: wavPath }),
-        headers: { 'Content-Type': 'application/json' },
+        body: formData,
       });
 
       const reader = response.body?.getReader();
@@ -57,13 +65,30 @@ export function useTranscriptionState() {
             try {
               const parsed = JSON.parse(dataStr);
               const text = typeof parsed === 'string' ? parsed : parsed.text ?? '';
-              accumulated += text;
-              updateContent(activeTabId.value, accumulated);
+              // Smart insertion: if we have accumulated text and the new chunk
+              // doesn't start with whitespace, prepend a space to avoid concatenation
+              const needsSpace = accumulated.length > 0 && text.length > 0 && !/^\s/.test(text);
+              const insertText = needsSpace ? ' ' + text : text;
+              accumulated += insertText;
+              api.insertTextAtCursor(insertText);
+              quillCursorIndex += insertText.length;
             } catch {
-              // ignore non-JSON data
+              // Server sends raw text chunks not wrapped in JSON — treat as plain text
+              const needsSpace = accumulated.length > 0 && dataStr.length > 0 && !/^\s/.test(dataStr);
+              const insertText = needsSpace ? ' ' + dataStr : dataStr;
+              accumulated += insertText;
+              api.insertTextAtCursor(insertText);
+              quillCursorIndex += insertText.length;
             }
           }
         }
+      }
+
+      if (!response.ok) {
+        console.error('[transcription] HTTP error:', response.status, response.statusText);
+        state.value = 'IDLE';
+        elapsedSeconds.value = 0;
+        return;
       }
     } catch (err) {
       console.error('[transcription] error:', err);

@@ -11,6 +11,8 @@ export interface ElectronAPI {
   onAudioStatus(callback: (status: AudioStatus) => void): () => void;
   openFilePicker(accept: string[]): Promise<string | null>;
   readFile(path: string): Promise<ArrayBuffer | null>;
+  insertTextAtCursor(text: string): void;
+  onInsertText(callback: (text: string) => void): () => void;
 }
 
 const electronAPI: ElectronAPI = {
@@ -39,6 +41,16 @@ const electronAPI: ElectronAPI = {
     if (result === null) return null;
     // result is a Buffer from Node — convert to ArrayBuffer
     return result.buffer.slice(result.byteOffset, result.byteOffset + result.byteLength);
+  },
+
+  insertTextAtCursor(text: string) {
+    ipcRenderer.invoke('insert-text-at-cursor', text);
+  },
+
+  onInsertText(callback) {
+    const handler = (_event: Electron.IpcRendererEvent, text: string) => callback(text);
+    ipcRenderer.on('insert-text', handler);
+    return () => ipcRenderer.removeListener('insert-text', handler);
   },
 };
 

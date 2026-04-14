@@ -16,12 +16,16 @@ import 'quill/dist/quill.snow.css';
 import EditorToolbar from './EditorToolbar.vue';
 import { useTabs } from '../../composables/useTabs';
 import { useEditor } from '../../composables/useEditor';
+import type { ElectronAPI } from '../../types/global';
 
 const editorEl = ref<HTMLElement | null>(null);
 let quill: Quill | null = null;
 
 const { activeTabId, getActiveTab, updateContent } = useTabs();
 const { registerEditor } = useEditor();
+const api = window.electronAPI as ElectronAPI;
+
+let cleanupInsertText: (() => void) | null = null;
 
 onMounted(() => {
   if (!editorEl.value) return;
@@ -45,15 +49,23 @@ onMounted(() => {
     updateContent(activeTabId.value, quill.getText());
   });
 
+  // Listen for transcription text insertions at cursor
+  cleanupInsertText = api.onInsertText((text: string) => {
+    if (!quill) return;
+    const sel = quill.getSelection(true);
+    quill.insertText(sel?.index ?? quill.getLength(), text);
+  });
+
   // Register for reset functionality
   registerEditor({ clearEditor });
 });
 
 onUnmounted(() => {
   quill = null;
+  cleanupInsertText?.();
 });
 
-// Sync when active tab changes
+// Sync when active tab changes or when tab content is updated in-place
 watch(activeTabId, () => {
   if (!quill) return;
   const tab = getActiveTab();

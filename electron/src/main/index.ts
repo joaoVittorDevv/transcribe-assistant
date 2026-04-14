@@ -127,6 +127,11 @@ function setupIpcHandlers(): void {
       return null;
     }
   });
+
+  ipcMain.handle('insert-text-at-cursor', (_event, text: string) => {
+    mainWindow?.webContents.send('insert-text', text);
+    return true;
+  });
 }
 
 // ---------------------------------------------------------------------------

@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Annotated
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 
 # Default port for the FastAPI SSE server — avoids conflict with common dev ports
 DEFAULT_PORT = 18763
@@ -151,6 +152,14 @@ class CancelResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 app = FastAPI(title="Transcribe Assistant API")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.post("/transcribe")
