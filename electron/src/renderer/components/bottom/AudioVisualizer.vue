@@ -11,31 +11,28 @@
 
 <script setup lang="ts">
 import { ref, watch, onUnmounted } from 'vue';
+import { useTranscriptionState } from '../../composables/useTranscriptionState';
 
 const props = defineProps<{ isActive: boolean }>();
-
 const NUM_BARS = 10;
 const bars = ref<number[]>(new Array(NUM_BARS).fill(4));
-
-let animFrame: ReturnType<typeof setInterval> | null = null;
+const { rmsValue } = useTranscriptionState();
 
 watch(() => props.isActive, (active) => {
-  if (active) {
-    animFrame = setInterval(() => {
-      bars.value = bars.value.map(() =>
-        Math.floor(Math.random() * 24) + 4
-      );
-    }, 120);
-  } else {
-    if (animFrame) {
-      clearInterval(animFrame);
-      animFrame = null;
-    }
+  if (!active) {
     bars.value = bars.value.map(() => 4);
   }
 }, { immediate: true });
 
-onUnmounted(() => {
-  if (animFrame) clearInterval(animFrame);
+watch(rmsValue, (rms) => {
+  if (!props.isActive) return;
+  bars.value = bars.value.map((_, i) => {
+    const center = NUM_BARS / 2;
+    const dist = Math.abs(i - center) / center;
+    const scale = 1 - dist * 0.5;
+    return Math.round(4 + rms * 24 * scale);
+  });
 });
+
+onUnmounted(() => {});
 </script>
