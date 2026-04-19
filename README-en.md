@@ -4,31 +4,31 @@
 
 <h1 align="center">Transcribe Assistant</h1>
 
-The **Transcribe Assistant** is a cross-platform desktop application built with Python (CustomTkinter) engineered to optimize audio annotation pipelines. It relies on a distinct hybrid routing engine that falls back gracefully between local, privacy-centric AI models utilizing GPU/CPU (`faster-whisper`), and robust cloud endpoints via Google Gemini.
+The **Transcribe Assistant** is a cross-platform desktop application built with Python (Flet) engineered to optimize audio annotation pipelines. It relies on a hybrid routing engine that combines Google Gemini cloud capabilities with the fast Groq API (Whisper-large-v3-turbo) as fallback — eliminating the need for local GPU to achieve offline-quality transcription.
 
-The primary design principle is robust resilience to connectivity drops, serving seamless transcription offline or online.
+The primary design principle is robust resilience to connectivity drops, serving seamless transcription online.
 
 ## ✨ Key Features
 
-- **Hybrid Routing Network:** Smart fallback and graceful transitions between cloud processing (Gemini API) and local inferencing (faster-whisper).
+- **Hybrid Routing Network:** Smart fallback between Google Gemini and Groq (Whisper cloud), with graceful transitions and intelligent error recovery.
 - **Multi-Tab Workspace:** Manage and isolate multiple audio transcription sessions simultaneously through an intuitive tab-based interface.
 - **Internationalization (i18n):** Built-in and extensive multilingual support for the user interface out of the box.
 - **Ongoing Recording Controls:** Active capabilities to immediately abort and discard any ongoing audio recording flow.
 
 ## 🚀 Architecture & Hybrid Routing
 
-The core engine (`app/transcriber.py`) supports 3 execution modes:
-1. **Auto Mode ("auto"):** Pings the tracked host (`NETWORK_PING_HOST`) via `network_monitor.py`. Upon successful internet detection, it routes audio metadata via `Files API` to Google Gemini. If the connection fails or drops, it transparently rolls over to the local parameter-frozen Whisper model.
-2. **Force Cloud ("gemini"):** Bypasses all local execution checks to favor pinpoint accuracy by targeting your `.env` configured model (e.g., `gemini-2.0-flash`).
-3. **Force Offline ("whisper"):** Bypasses tracking completely, triggering exclusively the `faster-whisper` ecosystem. The engine lazy-loads the transformer checkpoint, avoiding heavy VRAM allocation until inferencing is mandated. It defaults to CPU (int8) quantization if the host's CUDA toolkit misbehaves.
+The core engine supports 3 execution modes:
+1. **Auto Mode ("auto"):** Pings the tracked host (`NETWORK_PING_HOST`) via `network_monitor.py`. Upon successful internet detection, it routes audio via `Files API` to Google Gemini. If the connection fails, it falls back to the Groq API (`whisper-large-v3-turbo`).
+2. **Force Cloud ("gemini"):** Bypasses all fallback checks, targeting your `.env` configured model (e.g., `gemini-2.0-flash`) via Agno Agent for maximum accuracy.
+3. **Force Groq ("groq"):** Uses exclusively the Groq API with `whisper-large-v3-turbo`. Fast, no local GPU required, requires internet.
 
 ### Technology Stack
-- **Language & Standards:** Python 3.12+ wrapped by `uv` packaging. Codebase styling strictly follows `black` formatting definitions.
-- **UI:** `customtkinter` (Native Performant GUIs over Tk).
-- **Offline Transcriptions:** `faster-whisper`.
-- **Cloud Transcriptions:** `google-genai`.
-- **Audio Capture Node:** `sounddevice` paired with `soundfile`.
-- **Database Architecture:** Built-in SQLite via `app/database.py`.
+- **Language & Standards:** Python 3.12+ wrapped by `uv`. Codebase follows `black` formatting.
+- **UI (Primary):** `Flet` (async framework based on Flutter).
+- **Cloud Transcription:** `google-genai` (Gemini) + `groq` (Whisper cloud).
+- **Agent Orchestration:** `agno` (agent framework with streaming support).
+- **Audio Capture:** `sounddevice` paired with `soundfile`.
+- **Database:** Built-in SQLite via `app/database.py`.
 
 ---
 
@@ -55,11 +55,9 @@ cp .env.example .env
 ```
 
 **Crucial Variables to Define:**
-- `GOOGLE_API_KEY`: Strictly required for Cloud/Auto execution. Generate at aistudio.google.com.
+- `GOOGLE_API_KEY`: Required for Google Gemini transcription. Generate at aistudio.google.com.
+- `GROQ_API_KEY`: Required for Groq Whisper cloud fallback. Generate at console.groq.com.
 - `GEMINI_MODEL`: Standard target is `gemini-2.0-flash` or `gemini-1.5-pro`.
-- `WHISPER_MODEL`: Controls base quantization capacity (`base`, `small`, `medium`). The `base` and `small` profiles hover safely on 4GB VRAM GPU machines.
-- `WHISPER_DEVICE`: Declare either `cuda` or manually shift to `cpu`.
-- `WHISPER_COMPUTE_TYPE`: Use `float16` for Nvidia clusters natively, `int8` for limited setups, or `float32` alongside CPU mode.
 
 ### 3. Application Execution
 Execute the Python entry module once your `.env` is loaded with API specifications:
