@@ -140,11 +140,11 @@ class MainWindow(ctk.CTk):
             values=[
                 i18n.t("ui.modes.automatic"),
                 i18n.t("ui.modes.google"),
-                i18n.t("ui.modes.whisper"),
+                i18n.t("ui.modes.groq"),
             ],
             command=lambda _: None,
         )
-        self._mode_selector.set(i18n.t("ui.modes.automatic"))
+        self._mode_selector.set(i18n.t("ui.modes.groq"))
         self._mode_selector.grid(row=0, column=0, sticky="w")
 
         # Right-side status: network + history button
@@ -409,8 +409,8 @@ class MainWindow(ctk.CTk):
         current_mode_idx = 0
         try:
             current_idx_val = self._mode_selector.get()
-            modes_pt = ["Automático", "Google", "Whisper"]
-            modes_en = ["Automatic", "Google", "Whisper"]
+            modes_pt = ["Automático", "Google", "Groq"]
+            modes_en = ["Automatic", "Google", "Groq"]
             if current_idx_val in modes_pt:
                 current_mode_idx = modes_pt.index(current_idx_val)
             elif current_idx_val in modes_en:
@@ -421,7 +421,7 @@ class MainWindow(ctk.CTk):
         new_modes = [
             i18n.t("ui.modes.automatic"),
             i18n.t("ui.modes.google"),
-            i18n.t("ui.modes.whisper"),
+            i18n.t("ui.modes.groq"),
         ]
         self._mode_selector.configure(values=new_modes)
         self._mode_selector.set(new_modes[current_mode_idx])
@@ -556,7 +556,7 @@ class MainWindow(ctk.CTk):
         mode_map = {
             i18n.t("ui.modes.automatic"): "auto",
             i18n.t("ui.modes.google"): "gemini",
-            i18n.t("ui.modes.whisper"): "whisper",
+            i18n.t("ui.modes.groq"): "groq",
         }
 
         mode = mode_map.get(self._mode_selector.get(), "auto")

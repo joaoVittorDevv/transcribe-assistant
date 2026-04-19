@@ -2,12 +2,13 @@
 
 Routes audio transcription requests between:
   - Google Gemini (cloud): uploads audio via Files API + System Instruction
-  - faster-whisper (local): uses initial_prompt for glossary injection
+  - Groq Whisper (cloud): uses initial_prompt for glossary injection
 
 Modes:
-  "auto"    — Try Gemini; fall back to Whisper silently if offline.
+  "auto"    — Try Gemini; fall back to Groq silently if offline.
   "gemini"  — Force Gemini only; raises TranscriptionError if offline.
-  "whisper" — Force Whisper only; loads model lazily (VRAM on demand).
+  "groq"    — Force Groq only; raises TranscriptionError if offline.
+
 
 Usage:
     transcriber = Transcriber(network_monitor)
@@ -26,12 +27,10 @@ from typing import Literal
 from app.config import (
     GEMINI_MODEL,
     GOOGLE_API_KEY,
-    WHISPER_COMPUTE_TYPE,
-    WHISPER_DEVICE,
-    WHISPER_MODEL,
+    GROQ_API_KEY,
 )
 
-TranscriptionMode = Literal["auto", "gemini", "whisper"]
+TranscriptionMode = Literal["auto", "gemini", "groq"]
 
 
 class TranscriptionError(Exception):
@@ -39,7 +38,7 @@ class TranscriptionError(Exception):
 
 
 class Transcriber:
-    """Routes transcription to Gemini or Whisper based on mode and connectivity.
+    """Routes transcription to Gemini or Groq based on mode and connectivity.
 
     Args:
         is_online_fn: Callable that returns True if internet is available.
@@ -48,7 +47,6 @@ class Transcriber:
 
     def __init__(self, is_online_fn: callable) -> None:  # type: ignore[valid-type]
         self._is_online_fn = is_online_fn
-        self._whisper_model = None  # Lazy-loaded on first use
 
     # ------------------------------------------------------------------
     # Public API
@@ -67,7 +65,7 @@ class Transcriber:
             audio_path:  Path to the WAV file to transcribe.
             prompt_text: The active prompt's instruction text (used by Gemini).
             keywords:    Glossary words (used by both backends differently).
-            mode:        Transcription mode — "auto" | "gemini" | "whisper".
+            mode:        Transcription mode — "auto" | "gemini" | "groq".
 
         Returns:
             Transcribed text string.
@@ -75,10 +73,15 @@ class Transcriber:
         Raises:
             TranscriptionError: If the selected backend fails and no fallback exists.
         """
-        if mode == "whisper":
+        if mode == "groq":
+            online = self._is_online_fn()
             # DEBUG - REMOVE LATER
-            print("[DEBUG] Transcriber: modo forçado WHISPER")
-            return self._transcribe_whisper(audio_path, keywords)
+            print(f"[DEBUG] Transcriber: modo forçado GROQ | is_online={online}")
+            if not online:
+                raise TranscriptionError(
+                    "Modo 'Forçar Groq' selecionado, mas sem conexao com a internet."
+                )
+            return self._transcribe_groq(audio_path, keywords)
 
         if mode == "gemini":
             online = self._is_online_fn()
@@ -86,7 +89,7 @@ class Transcriber:
             print(f"[DEBUG] Transcriber: modo GEMINI | is_online={online}")
             if not online:
                 raise TranscriptionError(
-                    "Modo 'Forcar Google' selecionado, mas sem conexao com a internet."
+                    "Modo 'Forçar Google' selecionado, mas sem conexao com a internet."
                 )
             return self._transcribe_gemini(audio_path, prompt_text, keywords)
 
@@ -94,22 +97,25 @@ class Transcriber:
         online = self._is_online_fn()
         # DEBUG - REMOVE LATER
         print(f"[DEBUG] Transcriber: modo AUTO | is_online={online}")
-        if online:
-            try:
-                # DEBUG - REMOVE LATER
-                print("[DEBUG] Transcriber: tentando Gemini...")
-                result = self._transcribe_gemini(audio_path, prompt_text, keywords)
-                # DEBUG - REMOVE LATER
-                print("[DEBUG] Transcriber: Gemini OK")
-                return result
-            except TranscriptionError as exc:
-                # DEBUG - REMOVE LATER
-                print(
-                    f"[DEBUG] Transcriber: Gemini falhou ({exc}), fazendo fallback para Whisper"
-                )
+        if not online:
+            raise TranscriptionError("Nenhuma engine disponivel (Offline). Tente novamente quando houver internet.")
+        
+        try:
+            # DEBUG - REMOVE LATER
+            print("[DEBUG] Transcriber: tentando Groq...")
+            result = self._transcribe_groq(audio_path, keywords)
+            # DEBUG - REMOVE LATER
+            print("[DEBUG] Transcriber: Groq OK")
+            return result
+        except TranscriptionError as exc:
+            # DEBUG - REMOVE LATER
+            print(
+                f"[DEBUG] Transcriber: Groq falhou ({exc}), fazendo fallback para Gemini"
+            )
+            
         # DEBUG - REMOVE LATER
-        print("[DEBUG] Transcriber: usando Whisper local")
-        return self._transcribe_whisper(audio_path, keywords)
+        print("[DEBUG] Transcriber: usando Gemini (fallback)")
+        return self._transcribe_gemini(audio_path, prompt_text, keywords)
 
     # ------------------------------------------------------------------
     # Gemini backend
@@ -179,116 +185,39 @@ class Transcriber:
         return "\n\n".join(parts)
 
     # ------------------------------------------------------------------
-    # Whisper backend
+    # Groq backend
     # ------------------------------------------------------------------
 
-    def _transcribe_whisper(self, audio_path: Path, keywords: list[str]) -> str:
-        """Transcribe using faster-whisper with lazy model loading.
-
-        Handles CUDA runtime errors (e.g. libcublas not found) by falling
-        back to a CPU-only model on the first inference failure.
+    def _transcribe_groq(self, audio_path: Path, keywords: list[str]) -> str:
+        """Transcribe using Groq API whisper-large-v3-turbo.
         """
-        model = self._get_whisper_model()
-        initial_prompt = ", ".join(keywords) if keywords else None
+        try:
+            from groq import Groq
+        except ImportError as exc:
+            raise TranscriptionError(
+                "groq nao instalado. Execute: uv add groq"
+            ) from exc
+
+        # LIMIT LIMIT: Groq free tier limit is 25MB
+        if audio_path.stat().st_size > 25 * 1024 * 1024:
+            raise TranscriptionError("Arquivo de áudio muito grande para a API do Groq (> 25MB).")
+
+        client = Groq(api_key=GROQ_API_KEY)
+        initial_prompt = ", ".join(keywords) if keywords else ""
 
         try:
-            segments, _ = model.transcribe(
-                str(audio_path),
-                initial_prompt=initial_prompt,
-                language="pt",  # Portuguese — change if needed
-                beam_size=5,
-                vad_filter=True,  # Remove silence automatically
-            )
-            return " ".join(seg.text.strip() for seg in segments).strip()
+            with open(audio_path, "rb") as file:
+                transcription = client.audio.transcriptions.create(
+                    file=file,
+                    model="whisper-large-v3-turbo",
+                    prompt=initial_prompt,
+                    response_format="text",
+                    language="pt",
+                    temperature=0.0
+                )
+            return str(transcription).strip()
         except Exception as exc:
-            err_msg = str(exc)
-            # ctranslate2 loads CUDA libs lazily — first .transcribe() may fail
-            # even if WhisperModel() succeeded.
-            if "lib" in err_msg.lower() and (
-                "cuda" in err_msg.lower()
-                or "cublas" in err_msg.lower()
-                or "cannot be loaded" in err_msg.lower()
-            ):
-                # DEBUG - REMOVE LATER
-                print(
-                    f"[DEBUG] Whisper: erro CUDA em runtime ({exc}), recarregando em CPU..."
-                )
-                self._force_cpu_model()
-                try:
-                    segments, _ = self._whisper_model.transcribe(
-                        str(audio_path),
-                        initial_prompt=initial_prompt,
-                        language="pt",
-                        beam_size=5,
-                        vad_filter=True,
-                    )
-                    # DEBUG - REMOVE LATER
-                    print("[DEBUG] Whisper: transcricao em CPU (fallback) OK")
-                    return " ".join(seg.text.strip() for seg in segments).strip()
-                except Exception as cpu_exc:
-                    raise TranscriptionError(
-                        f"Whisper falhou em GPU e tambem em CPU: {cpu_exc}"
-                    ) from cpu_exc
-            raise TranscriptionError(f"Erro na transcricao com Whisper: {exc}") from exc
-
-    def _force_cpu_model(self) -> None:
-        """Reload the Whisper model on CPU with int8 (CUDA unavailable fallback)."""
-        from faster_whisper import WhisperModel
-
-        self._whisper_model = WhisperModel(
-            WHISPER_MODEL, device="cpu", compute_type="int8"
-        )
-        # DEBUG - REMOVE LATER
-        print("[DEBUG] Whisper: modelo recarregado em CPU int8")
-
-    def _get_whisper_model(self):
-        """Return the Whisper model, loading it into memory on first call.
-
-        Tries CUDA first; if CUDA libs are missing, falls back to CPU automatically.
-        """
-        if self._whisper_model is None:
-            try:
-                from faster_whisper import WhisperModel
-            except ImportError as exc:
-                raise TranscriptionError(
-                    "faster-whisper nao instalado. Execute: uv add faster-whisper"
-                ) from exc
-
-            device = WHISPER_DEVICE
-            compute_type = WHISPER_COMPUTE_TYPE
-
-            # DEBUG - REMOVE LATER
-            print(
-                f"[DEBUG] Whisper: carregando modelo '{WHISPER_MODEL}' | device={device} | compute_type={compute_type}"
-            )
-
-            try:
-                self._whisper_model = WhisperModel(
-                    WHISPER_MODEL,
-                    device=device,
-                    compute_type=compute_type,
-                )
-                # DEBUG - REMOVE LATER
-                print(f"[DEBUG] Whisper: modelo carregado com sucesso em {device}")
-            except Exception as cuda_exc:  # noqa: BLE001
-                # CUDA libraries missing or device not available — retry on CPU
-                # DEBUG - REMOVE LATER
-                print(f"[DEBUG] Whisper: falha ao carregar em {device}: {cuda_exc}")
-                print("[DEBUG] Whisper: tentando fallback para CPU...")
-                try:
-                    self._whisper_model = WhisperModel(
-                        WHISPER_MODEL,
-                        device="cpu",
-                        compute_type="int8",
-                    )
-                    # DEBUG - REMOVE LATER
-                    print("[DEBUG] Whisper: modelo carregado em CPU (fallback)")
-                except Exception as cpu_exc:
-                    raise TranscriptionError(
-                        f"Nao foi possivel carregar o Whisper em GPU nem CPU: {cpu_exc}"
-                    ) from cpu_exc
-
-        return self._whisper_model
+            raise TranscriptionError(f"Erro na transcricao com Groq: {exc}") from exc
 
     # ------------------------------------------------------------------
     # Title Generation

@@ -5,7 +5,7 @@
       "modes": {
         "automatic": "Automático",
         "google": "Google",
-        "whisper": "Whisper"
+        "groq": "Groq"
       },
       "network": {
         "offline": "Offline",

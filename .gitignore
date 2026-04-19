@@ -28,3 +28,5 @@ docs/
 
 # Logs
 *.log
+
+electron/node_modules
