@@ -43,6 +43,11 @@ class AudioRecorder:
         self._stream: sd.InputStream | None = None
         self._recording = False
         self._current_rms: float = 0.0
+        self._source: str = "microphone"  # "microphone" | "system_audio"
+
+    def set_source(self, source: str) -> None:
+        """Set audio source: "microphone" (default) or "system_audio"."""
+        self._source = source
 
     # ------------------------------------------------------------------
     # Public API
@@ -58,7 +63,7 @@ class AudioRecorder:
         return self._current_rms
 
     def start_recording(self) -> None:
-        """Begin capturing audio from the default input device."""
+        """Begin capturing audio from the configured source."""
         if self._recording:
             return
 
@@ -66,7 +71,9 @@ class AudioRecorder:
             self._frames = []
             self._recording = True
 
+        device = self._resolve_device()
         self._stream = sd.InputStream(
+            device=device,
             samplerate=_SAMPLE_RATE,
             channels=_CHANNELS,
             dtype=_DTYPE,
@@ -74,6 +81,20 @@ class AudioRecorder:
             callback=self._audio_callback,
         )
         self._stream.start()
+
+    def _resolve_device(self) -> int | None:
+        """Resolve self._source to a sounddevice device index.
+
+        "microphone" → default input device (None)
+        "system_audio" → first available monitor/mix device, else None
+        """
+        if self._source == "system_audio":
+            for idx, info in enumerate(sd.query_devices()):
+                name = info.get("name", "").lower()
+                if "monitor" in name or "mix" in name:
+                    return idx
+            # Fall back to default if no monitor found
+        return None  # default system microphone
 
     def stop_recording(self) -> Path:
         """Stop capture and save audio to a temporary WAV file.

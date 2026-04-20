@@ -1,8 +1,8 @@
 """app.ui.main_window — Primary application window.
 
 Orchestrates all backend services (AudioRecorder, NetworkMonitor,
-Transcriber) and UI sub-components (Sidebar, VUMeter, HistoryWindow)
-into a single cohesive CustomTkinter interface.
+Transcriber) and UI sub-components (VUMeter) into a single
+cohesive CustomTkinter interface.
 
 Threading strategy:
   - Audio capture callback → Queue → root.after() polling → UI update
@@ -28,9 +28,7 @@ from app.audio_validator import (
 )
 from app.network_monitor import NetworkMonitor
 from app.transcriber import Transcriber, TranscriptionError
-from app.ui.history_window import HistoryWindow
 from app.ui.native_dialog import open_audio_file
-from app.ui.sidebar import Sidebar
 from app.ui.vu_meter import VUMeter
 
 # Queue used to safely post events from worker threads to the UI thread
@@ -108,19 +106,12 @@ class MainWindow(ctk.CTk):
     # ==================================================================
 
     def _build_layout(self) -> None:
-        self.grid_columnconfigure(1, weight=1)
+        self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(0, weight=1)
 
-        # ---- Sidebar (left) ----
-        self._sidebar = Sidebar(
-            self,
-            on_prompt_changed=lambda: None,  # No extra action needed
-        )
-        self._sidebar.grid(row=0, column=0, sticky="nsew")
-
-        # ---- Main area (right) ----
+        # ---- Main area ----
         main = ctk.CTkFrame(self, fg_color="transparent")
-        main.grid(row=0, column=1, sticky="nsew", padx=16, pady=16)
+        main.grid(row=0, column=0, sticky="nsew", padx=16, pady=16)
         main.grid_columnconfigure(0, weight=1)
         main.grid_rowconfigure(1, weight=1)
 
@@ -196,13 +187,25 @@ class MainWindow(ctk.CTk):
             text_fn=lambda: i18n.t("ui.buttons.import_audio"),
         )
 
-        self._history_btn = ctk.CTkButton(
+        # Settings / prompt modal button (gear icon)
+        self._settings_btn = ctk.CTkButton(
             status_frame,
-            text=i18n.t("ui.buttons.history"),
-            width=110,
-            command=self._open_history,
+            text="⚙",
+            width=36,
+            height=36,
+            font=("", 18),
+            fg_color="transparent",
+            hover_color=("gray75", "gray30"),
+            corner_radius=8,
+            command=self._open_prompt_modal,
         )
-        self._history_btn.pack(side="left")
+        self._settings_btn.pack(side="left")
+
+        # Tooltip for settings button
+        self._settings_tooltip = _Tooltip(
+            self._settings_btn,
+            text_fn=lambda: i18n.t("ui.buttons.settings"),
+        )
 
     def _build_text_area(self, parent) -> None:
         """Editable transcription text area with custom tabs."""
@@ -426,7 +429,6 @@ class MainWindow(ctk.CTk):
         self._mode_selector.configure(values=new_modes)
         self._mode_selector.set(new_modes[current_mode_idx])
 
-        self._history_btn.configure(text=i18n.t("ui.buttons.history"))
         self._copy_btn.configure(text=i18n.t("ui.buttons.copy"))
         self._reset_btn.configure(text=i18n.t("ui.buttons.reset"))
 
@@ -448,8 +450,6 @@ class MainWindow(ctk.CTk):
             self._network_label.configure(text=i18n.t("ui.network.offline"))
 
         self._lang_btn.set("PT" if i18n.get("locale") == "pt" else "EN")
-
-        self._sidebar.refresh_labels()
 
     def _set_language(self, language: str) -> None:
         """Switch language between PT and EN and refresh the UI."""
@@ -549,9 +549,9 @@ class MainWindow(ctk.CTk):
         self, wav_path: Path, target_tab_name: str, is_imported: bool = False
     ) -> None:
         """Run in the worker thread — posts result to the UI queue."""
-        prompt_data = self._sidebar.get_active_prompt()
+        prompt_data = db.get_default_prompt()
         prompt_text = prompt_data["texto_prompt"] if prompt_data else ""
-        keywords = prompt_data["palavras_chave"] if prompt_data else []
+        keywords = [row["palavra"] for row in db.get_keywords_by_prompt(prompt_data["id"])] if prompt_data else []
 
         mode_map = {
             i18n.t("ui.modes.automatic"): "auto",
@@ -898,8 +898,9 @@ class MainWindow(ctk.CTk):
                 text=i18n.t("ui.status.copied"), text_color="#22c55e"
             )
 
-    def _open_history(self) -> None:
-        HistoryWindow(self, on_restore=self._restore_session)
+    def _open_prompt_modal(self) -> None:
+        from app.ui.prompt_modal import PromptModal
+        PromptModal(self)
 
     # ==================================================================
     # Audio file import

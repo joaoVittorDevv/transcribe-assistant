@@ -11,8 +11,12 @@
                 "offline": "Offline",
                 "online": "Online"
             },
+            "source": {
+                "microphone": "Microphone",
+                "system_audio": "System Audio"
+            },
             "buttons": {
-                "history": "📋 History",
+                "settings": "⚙  Settings",
                 "record": "⏺  Record",
                 "stop": "⏸  Stop",
                 "cancel": "✖ Cancel",
