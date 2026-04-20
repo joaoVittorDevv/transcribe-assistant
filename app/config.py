@@ -53,6 +53,7 @@ GEMINI_MODEL: str = _optional("GEMINI_MODEL", "gemini-2.0-flash")
 # Groq
 # ---------------------------------------------------------------------------
 GROQ_API_KEY: str = _require("GROQ_API_KEY")
+GROQ_REVIEW_MODEL: str = _optional("GROQ_REVIEW_MODEL", "llama-3.1-8b-instant")
 
 # ---------------------------------------------------------------------------
 # Language

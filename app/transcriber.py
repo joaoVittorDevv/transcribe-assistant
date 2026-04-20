@@ -4,8 +4,12 @@ Routes audio transcription requests between:
   - Google Gemini (cloud): uploads audio via Files API + System Instruction
   - Groq Whisper (cloud): uses initial_prompt for glossary injection
 
+When using Groq, transcribed text is automatically reviewed by the Groq
+TextReviewerAgent (``llama-3.1-8b-instant``) for grammar and punctuation
+correction and keyword near-match flagging.
+
 Modes:
-  "auto"    — Try Gemini; fall back to Groq silently if offline.
+  "auto"    — Try Groq + review; fall back to Gemini silently if offline.
   "gemini"  — Force Gemini only; raises TranscriptionError if offline.
   "groq"    — Force Groq only; raises TranscriptionError if offline.
 
@@ -81,7 +85,7 @@ class Transcriber:
                 raise TranscriptionError(
                     "Modo 'Forçar Groq' selecionado, mas sem conexao com a internet."
                 )
-            return self._transcribe_groq(audio_path, keywords)
+            return self._transcribe_groq(audio_path, keywords, prompt_text)
 
         if mode == "gemini":
             online = self._is_online_fn()
@@ -103,7 +107,7 @@ class Transcriber:
         try:
             # DEBUG - REMOVE LATER
             print("[DEBUG] Transcriber: tentando Groq...")
-            result = self._transcribe_groq(audio_path, keywords)
+            result = self._transcribe_groq(audio_path, keywords, prompt_text)
             # DEBUG - REMOVE LATER
             print("[DEBUG] Transcriber: Groq OK")
             return result
@@ -188,8 +192,14 @@ class Transcriber:
     # Groq backend
     # ------------------------------------------------------------------
 
-    def _transcribe_groq(self, audio_path: Path, keywords: list[str]) -> str:
-        """Transcribe using Groq API whisper-large-v3-turbo.
+    def _transcribe_groq(
+        self, audio_path: Path, keywords: list[str], prompt_text: str
+    ) -> str:
+        """Transcribe using Groq Whisper and automatically review the result.
+
+        The raw transcription is passed to the Groq TextReviewerAgent
+        (``llama-3.1-8b-instant``) which corrects grammar and punctuation.
+        Keyword near-matches are flagged in the debug output.
         """
         try:
             from groq import Groq
@@ -198,9 +208,11 @@ class Transcriber:
                 "groq nao instalado. Execute: uv add groq"
             ) from exc
 
-        # LIMIT LIMIT: Groq free tier limit is 25MB
+        # LIMIT: Groq free tier limit is 25 MB
         if audio_path.stat().st_size > 25 * 1024 * 1024:
-            raise TranscriptionError("Arquivo de áudio muito grande para a API do Groq (> 25MB).")
+            raise TranscriptionError(
+                "Arquivo de áudio muito grande para a API do Groq (> 25MB)."
+            )
 
         client = Groq(api_key=GROQ_API_KEY)
         initial_prompt = ", ".join(keywords) if keywords else ""
@@ -213,11 +225,36 @@ class Transcriber:
                     prompt=initial_prompt,
                     response_format="text",
                     language="pt",
-                    temperature=0.0
+                    temperature=0.0,
                 )
-            return str(transcription).strip()
+            raw_text = str(transcription).strip()
         except Exception as exc:
-            raise TranscriptionError(f"Erro na transcricao com Groq: {exc}") from exc
+            raise TranscriptionError(
+                f"Erro na transcricao com Groq: {exc}"
+            ) from exc
+
+        # --- Review step: grammar / punctuation correction ---
+        # DEBUG - REMOVE LATER
+        print("[DEBUG] Groq: chamando TextReviewerAgent...")
+        try:
+            from app.agents import TextReviewerAgent
+
+            reviewer = TextReviewerAgent()
+            review_result = reviewer.review(transcribed_text=raw_text, keywords=keywords)
+
+            # DEBUG - REMOVE LATER
+            print(
+                f"[DEBUG] Groq review: changes={review_result.has_changes}, "
+                f"near_matches={review_result.near_matches}"
+            )
+            if review_result.diff_lines:
+                print("[DEBUG] Groq diff:\n" + "\n".join(review_result.diff_lines))
+
+            return review_result.corrected_text
+        except Exception as exc:
+            # Graceful degradation: if review fails, return raw transcription
+            print(f"[DEBUG] Groq review failed ({exc}), usando texto bruto.")
+            return raw_text
 
     # ------------------------------------------------------------------
     # Title Generation
