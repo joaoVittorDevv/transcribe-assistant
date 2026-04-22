@@ -15,6 +15,8 @@ O **Assistente de Transcrição** é uma aplicação desktop desenvolvida em Pyt
 
 ## 🚀 Arquitetura e Roteamento Híbrido
 
+terste
+
 O sistema possui 3 modos de transcrição:
 1. **Modo Automático ("auto"):** Executa um _ping_ no host configurado (`NETWORK_PING_HOST`) via `network_monitor.py`. Se houver internet, envia o áudio via `Files API` para o Google Gemini. Se falhar, faz fallback para a API Groq (`whisper-large-v3-turbo`).
 2. **Forçar Cloud ("gemini"):** Usa exclusivamente o Google Gemini via Agno Agent, garantindo máxima precisão utilizando o modelo configurado no seu `.env` (ex: `gemini-2.0-flash`).

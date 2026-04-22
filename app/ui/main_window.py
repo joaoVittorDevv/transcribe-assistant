@@ -77,6 +77,7 @@ class MainWindow(ctk.CTk):
         self._record_start_time: float | None = None
         self._rms_queue: queue.Queue[float] = queue.Queue()
         self._save_timers: dict[str, str | None] = {}
+        self._current_audio_source: str = "microphone"
 
         # --- Services ---
         self._recorder = AudioRecorder(on_rms_update=self._on_rms)
@@ -330,8 +331,6 @@ class MainWindow(ctk.CTk):
         """Bottom controls: timer, VU meter, record button, copy, reset."""
         controls = ctk.CTkFrame(parent, fg_color="transparent")
         controls.grid(row=2, column=0, sticky="ew")
-        # Column 3 acts as a flexible spacer between status label and buttons
-        controls.grid_columnconfigure(3, weight=1)
 
         # Timer
         self._timer_label = ctk.CTkLabel(
@@ -344,13 +343,26 @@ class MainWindow(ctk.CTk):
 
         # VU Meter
         self._vu_meter = VUMeter(controls, width=28, height=50)
-        self._vu_meter.grid(row=0, column=1, sticky="w", padx=(0, 16))
+        self._vu_meter.grid(row=0, column=1, sticky="w", padx=(0, 8))
+
+        # Audio source selector (microphone / system audio)
+        self._source_selector = ctk.CTkSegmentedButton(
+            controls,
+            values=[
+                i18n.t("ui.source.microphone"),
+                i18n.t("ui.source.system_audio"),
+            ],
+            command=self._on_audio_source_change,
+            width=140,
+        )
+        self._source_selector.set(i18n.t("ui.source.microphone"))
+        self._source_selector.grid(row=0, column=2, sticky="w", padx=(0, 12))
 
         # Status label (shows transcription progress)
         self._status_label = ctk.CTkLabel(
             controls, text="", font=("", 11), text_color="gray"
         )
-        self._status_label.grid(row=0, column=2, sticky="w")
+        self._status_label.grid(row=0, column=3, sticky="w")
 
         # Column 3 acts as a flexible spacer between status label and buttons
         controls.grid_columnconfigure(3, weight=1)
@@ -428,6 +440,12 @@ class MainWindow(ctk.CTk):
         ]
         self._mode_selector.configure(values=new_modes)
         self._mode_selector.set(new_modes[current_mode_idx])
+
+        # Audio source selector
+        mic_label = i18n.t("ui.source.microphone")
+        sys_label = i18n.t("ui.source.system_audio")
+        self._source_selector.configure(values=[mic_label, sys_label])
+        self._source_selector.set(mic_label if self._current_audio_source == "microphone" else sys_label)
 
         self._copy_btn.configure(text=i18n.t("ui.buttons.copy"))
         self._reset_btn.configure(text=i18n.t("ui.buttons.reset"))
@@ -617,6 +635,16 @@ class MainWindow(ctk.CTk):
         except queue.Empty:
             pass
         self.after(_POLL_MS, self._poll_ui_queue)
+
+    def _on_audio_source_change(self, value: str) -> None:
+        """Update the audio source for the recorder."""
+        source = "system_audio" if value == i18n.t("ui.source.system_audio") else "microphone"
+        self._current_audio_source = source
+        self._recorder.set_source(source)
+        import sounddevice as sd
+        device_idx = self._recorder._resolve_device()
+        device_info = sd.query_devices()[device_idx] if device_idx is not None else None
+        print(f"[DEBUG] Audio source set to: {source} | device_idx={device_idx} | device={device_info}")
 
     def _poll_rms_queue(self) -> None:
         """Drain the RMS queue and update the VU meter."""

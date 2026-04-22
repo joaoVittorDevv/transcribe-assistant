@@ -46,6 +46,7 @@ Sua tarefa é analisar o texto transcrito e produzir uma versão corrigida com:
 2. **Pontuação** — adicione vírgulas, pontos, dois-pontos, ponto e vírgula e outros sinais conforme as regras da língua portuguesa;
 3. **Formatação** — separe parágrafos quando houver mudança de ideia; use iniciais maiúsculas quando necessário;
 4. **Completude** — não omita palavras spoken in the audio; se algo foi dito, inclua-o.
+5. **Glossário** — quando termos do glossário forem relevantes para o contexto, use-os corretamente no texto corrigido.
 
 REGRAS IMPORTANTES:
 - Preserve fielmente o conteúdo semântico do que foi dito. Não resuma, não generalize.
@@ -53,6 +54,7 @@ REGRAS IMPORTANTES:
 - Mantenha a grafia de termos técnicos e nomes próprios.
 - O texto deve ser devolvido APENAS como texto corrigido, sem comentários, sem aspas, sem marcadores.
 - Se o texto original já estiver correto e pontuado, devolva-o idêntico.
+- Quando o usuário fornecer diretrizes específicas, respeite-as fielmente na correção.
 """
 
 
@@ -89,6 +91,7 @@ class TextReviewerAgent:
         self,
         transcribed_text: str,
         keywords: list[str],
+        prompt_text: str = "",
     ) -> ReviewResult:
         """Correct and punctuate the given transcription.
 
@@ -98,6 +101,8 @@ class TextReviewerAgent:
             Raw transcription to review.
         keywords:
             List of known terms (used for near-match flagging).
+        prompt_text:
+            User-defined system instruction (guidelines/context from DB).
 
         Returns
         -------
@@ -105,7 +110,7 @@ class TextReviewerAgent:
             Contains ``corrected_text``, ``has_changes``, ``near_matches``,
             and ``diff_lines``.
         """
-        corrected = self._call_llm(transcribed_text)
+        corrected = self._call_llm(transcribed_text, keywords, prompt_text)
         near_matches = self._find_near_matches(corrected, keywords)
         diff_lines = self._build_diff(transcribed_text, corrected)
         has_changes = corrected.strip() != transcribed_text.strip()
@@ -121,13 +126,24 @@ class TextReviewerAgent:
     # Internals
     # ------------------------------------------------------------------
 
-    def _call_llm(self, text: str) -> str:
+    def _call_llm(self, text: str, keywords: list[str], prompt_text: str) -> str:
         """Send text to Groq and return the corrected version."""
+        user_content_parts = []
+
+        if prompt_text:
+            user_content_parts.append(f"DIRETRIZES DO USUÁRIO:\n{prompt_text}")
+
+        user_content_parts.append(
+            f"TERMOS DO GLOSSÁRIO: {', '.join(keywords) if keywords else 'Nenhum'}"
+        )
+
+        user_content_parts.append(f"TEXTO PARA REVISAR:\n{text}")
+
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
             {
                 "role": "user",
-                "content": f"CORRIGIR TEXTO:\n\n{text}",
+                "content": "\n\n".join(user_content_parts),
             },
         ]
 

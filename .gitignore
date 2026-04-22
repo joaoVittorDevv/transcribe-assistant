@@ -30,3 +30,5 @@ docs/
 *.log
 
 electron/node_modules
+
+graphify-out/

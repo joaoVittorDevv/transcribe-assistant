@@ -237,10 +237,25 @@ class Transcriber:
         # DEBUG - REMOVE LATER
         print("[DEBUG] Groq: chamando TextReviewerAgent...")
         try:
+            from app import database as db
+
+            default = db.get_default_prompt()
+            keywords_from_db = [row["palavra"] for row in db.get_keywords_by_prompt(default["id"])] if default else []
+            prompt_text_from_db = default["texto_prompt"] if default else ""
+        except Exception as exc:
+            print(f"[DEBUG] Groq: failed to fetch default prompt ({exc}), using empty values")
+            keywords_from_db = []
+            prompt_text_from_db = ""
+
+        try:
             from app.agents import TextReviewerAgent
 
             reviewer = TextReviewerAgent()
-            review_result = reviewer.review(transcribed_text=raw_text, keywords=keywords)
+            review_result = reviewer.review(
+                transcribed_text=raw_text,
+                keywords=keywords_from_db,
+                prompt_text=prompt_text_from_db,
+            )
 
             # DEBUG - REMOVE LATER
             print(
