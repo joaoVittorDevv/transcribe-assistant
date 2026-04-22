@@ -8,6 +8,9 @@ When using Groq, transcribed text is automatically reviewed by the Groq
 TextReviewerAgent (``llama-3.1-8b-instant``) for grammar and punctuation
 correction and keyword near-match flagging.
 
+Long audio files (>25 MB or >10 min) are automatically split into chunks
+via ``app.audio_chunker.split_audio`` and transcribed sequentially.
+
 Modes:
   "auto"    — Try Groq + review; fall back to Gemini silently if offline.
   "gemini"  — Force Gemini only; raises TranscriptionError if offline.
@@ -24,10 +27,14 @@ Usage:
     )
 """
 
+from __future__ import annotations
+
 import os
+import queue
 from pathlib import Path
 from typing import Literal
 
+from app.audio_chunker import AudioChunkingError, split_audio
 from app.config import (
     GEMINI_MODEL,
     GOOGLE_API_KEY,
@@ -39,6 +46,33 @@ TranscriptionMode = Literal["auto", "gemini", "groq"]
 
 class TranscriptionError(Exception):
     """Raised when all available transcription backends fail."""
+
+
+# Module-level UI queue imported from app.ui.main_window for progress updates
+_ui_queue: queue.Queue | None = None
+
+
+def _get_ui_queue() -> queue.Queue:
+    global _ui_queue
+    if _ui_queue is None:
+        # Try to import from main_window (avoids circular import at module level)
+        try:
+            from app.ui import main_window as mw
+
+            _ui_queue = mw._ui_queue
+        except Exception:
+            # Fallback: create a dummy queue if import fails
+            _ui_queue = queue.Queue()
+    return _ui_queue
+
+
+def _put_progress(message: str) -> None:
+    """Send a transcription_progress event to the UI queue if available."""
+    try:
+        q = _get_ui_queue()
+        q.put(("transcription_progress", message))
+    except Exception:
+        pass
 
 
 class Transcriber:
@@ -128,7 +162,56 @@ class Transcriber:
     def _transcribe_gemini(
         self, audio_path: Path, prompt_text: str, keywords: list[str]
     ) -> str:
-        """Upload audio to Gemini Files API and request transcription."""
+        """Upload audio to Gemini Files API and request transcription.
+
+        For files longer than 10 minutes, audio is automatically split into
+        chunks and processed sequentially.
+        """
+        try:
+            import soundfile as sf
+        except ImportError as exc:
+            raise TranscriptionError(
+                "soundfile nao instalado. Execute: uv add soundfile"
+            ) from exc
+
+        # Check if chunking is needed
+        audio_size_mb = audio_path.stat().st_size / (1024 * 1024)
+        try:
+            info = sf.info(str(audio_path))
+            total_duration = info.duration
+        except Exception as exc:
+            raise TranscriptionError(
+                f"Nao foi possível ler duracao do audio: {exc}"
+            ) from exc
+
+        max_duration_sec = 600.0  # 10 minutes default
+        needs_chunking = total_duration > max_duration_sec
+
+        if not needs_chunking:
+            return self._transcribe_gemini_single(audio_path, prompt_text, keywords)
+
+        # Long file — use chunking
+        texts: list[str] = []
+        try:
+            with split_audio(audio_path, max_duration_sec=max_duration_sec) as chunks:
+                total_chunks = len(chunks)
+                for k, (chunk_path, _chunk_dur) in enumerate(chunks, start=1):
+                    _put_progress(f"Transcribing chunk {k}/{total_chunks}...")
+                    text = self._transcribe_gemini_single(
+                        chunk_path, prompt_text, keywords
+                    )
+                    texts.append(text)
+        except AudioChunkingError as exc:
+            raise TranscriptionError(
+                f"Chunking falhou: {exc}"
+            ) from exc
+
+        return "\n\n".join(texts)
+
+    def _transcribe_gemini_single(
+        self, audio_path: Path, prompt_text: str, keywords: list[str]
+    ) -> str:
+        """Transcribe a single audio file via Gemini Files API (no chunking)."""
         try:
             from google import genai
             from google.genai import types
@@ -142,17 +225,16 @@ class Transcriber:
         # Build system instruction combining prompt text and glossary
         system_instruction = self._build_system_instruction(prompt_text, keywords)
 
-        # Upload the audio file to Files API (SDK >= 1.0 uses file=, not path=)
+        # Upload the audio file to Files API
         try:
             uploaded_file = client.files.upload(file=str(audio_path))
-            # DEBUG - REMOVE LATER
             print(f"[DEBUG] Gemini: upload concluido -> {uploaded_file.name}")
         except Exception as exc:
-            raise TranscriptionError(f"Falha ao fazer upload do audio: {exc}") from exc
+            raise TranscriptionError(
+                f"Falha ao fazer upload do audio: {exc}"
+            ) from exc
 
         try:
-            # SDK >= 1.0 simplified API: pass file object + string directly.
-            # The SDK auto-converts to the correct Part/Content types internally.
             response = client.models.generate_content(
                 model=GEMINI_MODEL,
                 contents=[uploaded_file, "Transcreva o audio acima com precisao."],
@@ -160,10 +242,13 @@ class Transcriber:
                     system_instruction=system_instruction,
                 ),
             )
-            # DEBUG - REMOVE LATER
-            print(f"[DEBUG] Gemini: resposta recebida ({len(response.text)} chars)")
+            print(
+                f"[DEBUG] Gemini: resposta recebida ({len(response.text)} chars)"
+            )
         except Exception as exc:
-            raise TranscriptionError(f"Erro na requisicao ao Gemini: {exc}") from exc
+            raise TranscriptionError(
+                f"Erro na requisicao ao Gemini: {exc}"
+            ) from exc
         finally:
             # Best-effort cleanup of the uploaded file
             try:
@@ -195,12 +280,59 @@ class Transcriber:
     def _transcribe_groq(
         self, audio_path: Path, keywords: list[str], prompt_text: str
     ) -> str:
-        """Transcribe using Groq Whisper and automatically review the result.
+        """Transcribe using Groq Whisper with automatic chunking for long audio.
 
-        The raw transcription is passed to the Groq TextReviewerAgent
-        (``llama-3.1-8b-instant``) which corrects grammar and punctuation.
-        Keyword near-matches are flagged in the debug output.
+        Files larger than 25 MB or longer than 10 minutes are split into
+        chunks via ``split_audio``, transcribed sequentially, and the results
+        are concatenated with ``\\n\\n``.
         """
+        try:
+            import soundfile as sf
+        except ImportError as exc:
+            raise TranscriptionError(
+                "soundfile nao instalado. Execute: uv add soundfile"
+            ) from exc
+
+        # Check if chunking is needed
+        audio_size_mb = audio_path.stat().st_size / (1024 * 1024)
+        try:
+            info = sf.info(str(audio_path))
+            total_duration = info.duration
+        except Exception as exc:
+            raise TranscriptionError(
+                f"Nao foi possível ler duracao do audio: {exc}"
+            ) from exc
+
+        max_duration_sec = 600.0  # 10 minutes default
+        needs_chunking = audio_size_mb > 25.0 or total_duration > max_duration_sec
+
+        if not needs_chunking:
+            # Short file — transcribe directly without chunking
+            return self._transcribe_groq_single(audio_path, keywords, prompt_text)
+
+        # Long file — use chunking
+        texts: list[str] = []
+        try:
+            with split_audio(audio_path, max_duration_sec=max_duration_sec) as chunks:
+                total_chunks = len(chunks)
+                for k, (chunk_path, _chunk_dur) in enumerate(chunks, start=1):
+                    _put_progress(f"Transcribing chunk {k}/{total_chunks}...")
+                    # Per-chunk 25 MB validation is done inside split_audio
+                    text = self._transcribe_groq_single(
+                        chunk_path, keywords, prompt_text
+                    )
+                    texts.append(text)
+        except AudioChunkingError as exc:
+            raise TranscriptionError(
+                f"Chunking falhou: {exc}"
+            ) from exc
+
+        return "\n\n".join(texts)
+
+    def _transcribe_groq_single(
+        self, audio_path: Path, keywords: list[str], prompt_text: str
+    ) -> str:
+        """Transcribe a single audio file with Groq Whisper (no chunking)."""
         try:
             from groq import Groq
         except ImportError as exc:
@@ -208,10 +340,10 @@ class Transcriber:
                 "groq nao instalado. Execute: uv add groq"
             ) from exc
 
-        # LIMIT: Groq free tier limit is 25 MB
+        # Validate size for single chunk (should already be ≤25MB from chunker)
         if audio_path.stat().st_size > 25 * 1024 * 1024:
             raise TranscriptionError(
-                "Arquivo de áudio muito grande para a API do Groq (> 25MB)."
+                "Chunk muito grande para a API do Groq (> 25MB)."
             )
 
         client = Groq(api_key=GROQ_API_KEY)
@@ -234,16 +366,22 @@ class Transcriber:
             ) from exc
 
         # --- Review step: grammar / punctuation correction ---
-        # DEBUG - REMOVE LATER
         print("[DEBUG] Groq: chamando TextReviewerAgent...")
         try:
             from app import database as db
 
             default = db.get_default_prompt()
-            keywords_from_db = [row["palavra"] for row in db.get_keywords_by_prompt(default["id"])] if default else []
+            keywords_from_db = (
+                [row["palavra"] for row in db.get_keywords_by_prompt(default["id"])]
+                if default
+                else []
+            )
             prompt_text_from_db = default["texto_prompt"] if default else ""
         except Exception as exc:
-            print(f"[DEBUG] Groq: failed to fetch default prompt ({exc}), using empty values")
+            print(
+                f"[DEBUG] Groq: failed to fetch default prompt ({exc}), "
+                "using empty values"
+            )
             keywords_from_db = []
             prompt_text_from_db = ""
 
@@ -257,7 +395,6 @@ class Transcriber:
                 prompt_text=prompt_text_from_db,
             )
 
-            # DEBUG - REMOVE LATER
             print(
                 f"[DEBUG] Groq review: changes={review_result.has_changes}, "
                 f"near_matches={review_result.near_matches}"

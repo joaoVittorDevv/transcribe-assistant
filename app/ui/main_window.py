@@ -632,6 +632,10 @@ class MainWindow(ctk.CTk):
                     self._finish_import_rejected(payload)
                 elif event == "import_accepted":
                     self._finish_import_accepted()
+                elif event == "transcription_progress":
+                    self._status_label.configure(
+                        text=payload, text_color="#eab308"
+                    )
         except queue.Empty:
             pass
         self.after(_POLL_MS, self._poll_ui_queue)
