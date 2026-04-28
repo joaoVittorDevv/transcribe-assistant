@@ -1,13 +1,21 @@
-"""app.transcriber — AI transcription router (Gemini ↔ Whisper).
+"""app.transcriber — AI transcription router (Gemini ↔ Groq).
 
 Routes audio transcription requests between:
-  - Google Gemini (cloud): uploads audio via Files API + System Instruction
-  - faster-whisper (local): uses initial_prompt for glossary injection
+  - Google Gemini (cloud): uploads audio via Files API + System Instruction,
+    streaming word-by-word via generate_content_stream.
+  - Groq Whisper (cloud): fast, cost-effective for short audio (< 10 min).
+    Transcribed text is automatically reviewed by TranscriptionReviewAgent
+    for grammar/punctuation correction.
+
+Audio files longer than 10 minutes are automatically routed to Google Gemini
+regardless of selected mode — Groq has a 25 MB file limit and client-side
+chunking degrades transcription quality.
 
 Modes:
-  "auto"    — Try Gemini; fall back to Whisper silently if offline.
-  "gemini"  — Force Gemini only; raises TranscriptionError if offline.
-  "whisper" — Force Whisper only; loads model lazily (VRAM on demand).
+  "auto"   — Try Groq + review; fall back to Gemini silently.
+  "gemini" — Force Gemini only; raises TranscriptionError if offline.
+  "groq"   — Force Groq only; raises TranscriptionError if offline.
+             Audio > 10 min is automatically redirected to Gemini.
 
 Usage:
     transcriber = Transcriber(network_monitor)
@@ -16,23 +24,22 @@ Usage:
         prompt_text="Aja como desenvolvedor...",
         keywords=["Reqflow", "faster-whisper"],
         mode="auto",
+        on_chunk=callback,
     )
 """
 
-import os
 from pathlib import Path
 from typing import Literal
 
 from app.config import (
     GEMINI_MODEL,
-    GOOGLE_API_KEY,
     GEMINI_TIMEOUT,
-    WHISPER_COMPUTE_TYPE,
-    WHISPER_DEVICE,
-    WHISPER_MODEL,
+    GOOGLE_API_KEY,
+    GROQ_API_KEY,
+    GROQ_REVIEW_MODEL,
 )
 
-TranscriptionMode = Literal["auto", "gemini", "whisper"]
+TranscriptionMode = Literal["auto", "gemini", "groq"]
 
 
 class TranscriptionError(Exception):
@@ -40,7 +47,7 @@ class TranscriptionError(Exception):
 
 
 class Transcriber:
-    """Routes transcription to Gemini or Whisper based on mode and connectivity.
+    """Routes transcription to Gemini or Groq based on mode and connectivity.
 
     Args:
         is_online_fn: Callable that returns True if internet is available.
@@ -49,11 +56,24 @@ class Transcriber:
 
     def __init__(self, is_online_fn: callable) -> None:  # type: ignore[valid-type]
         self._is_online_fn = is_online_fn
-        self._whisper_model = None  # Lazy-loaded on first use
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _is_long_audio(audio_path: Path, max_duration_sec: float = 600.0) -> bool:
+        """Check if audio file exceeds max_duration_sec (default 10 minutes).
+
+        Returns False if the file cannot be read — lets the backend handle errors.
+        """
+        try:
+            import soundfile as sf
+
+            info = sf.info(str(audio_path))
+            return info.duration > max_duration_sec
+        except Exception:
+            return False
 
     def transcribe(
         self,
@@ -69,7 +89,8 @@ class Transcriber:
             audio_path:  Path to the WAV file to transcribe.
             prompt_text: The active prompt's instruction text (used by Gemini).
             keywords:    Glossary words (used by both backends differently).
-            mode:        Transcription mode — "auto" | "gemini" | "whisper".
+            mode:        Transcription mode — "auto" | "gemini" | "groq".
+            on_chunk:    Optional callback(chunk_text) for SSE streaming.
 
         Returns:
             Transcribed text string.
@@ -77,50 +98,66 @@ class Transcriber:
         Raises:
             TranscriptionError: If the selected backend fails and no fallback exists.
         """
-        if mode == "whisper":
-            # DEBUG - REMOVE LATER
-            print("[DEBUG] Transcriber: modo forçado WHISPER")
-            return self._transcribe_whisper(audio_path, keywords, on_chunk)
-
-        if mode == "gemini":
-            online = self._is_online_fn()
-            # DEBUG - REMOVE LATER
-            print(f"[DEBUG] Transcriber: modo GEMINI | is_online={online}")
-            if not online:
-                raise TranscriptionError(
-                    "Modo 'Forcar Google' selecionado, mas sem conexao com a internet."
+        # Audio files longer than 10 minutes are always sent to Gemini,
+        # regardless of the selected mode — Groq has a 25 MB file limit
+        # and client-side chunking degrades quality.
+        if self._is_long_audio(audio_path):
+            print(
+                f"[DEBUG] Transcriber: áudio longo (>10 min), redirecionando "
+                f"para Gemini (modo={mode})"
+            )
+            if on_chunk:
+                on_chunk(
+                    "\n--- Transcrição via Google Gemini (áudio longo) ---\n\n"
                 )
             return self._transcribe_gemini(audio_path, prompt_text, keywords, on_chunk)
 
-        # mode == "auto"
         online = self._is_online_fn()
-        # DEBUG - REMOVE LATER
+        if not online:
+            raise TranscriptionError(
+                "Nenhuma engine disponível (Offline). "
+                "Tente novamente quando houver internet."
+            )
+
+        if mode == "groq":
+            print(f"[DEBUG] Transcriber: modo forçado GROQ | is_online={online}")
+            return self._transcribe_groq(audio_path, keywords, prompt_text, on_chunk)
+
+        if mode == "gemini":
+            print(f"[DEBUG] Transcriber: modo GEMINI | is_online={online}")
+            return self._transcribe_gemini(audio_path, prompt_text, keywords, on_chunk)
+
+        # mode == "auto"
         print(f"[DEBUG] Transcriber: modo AUTO | is_online={online}")
-        if online:
-            try:
-                # DEBUG - REMOVE LATER
-                print("[DEBUG] Transcriber: tentando Gemini...")
-                result = self._transcribe_gemini(audio_path, prompt_text, keywords, on_chunk)
-                # DEBUG - REMOVE LATER
-                print("[DEBUG] Transcriber: Gemini OK")
-                return result
-            except TranscriptionError as exc:
-                # DEBUG - REMOVE LATER
-                print(
-                    f"[DEBUG] Transcriber: Gemini falhou ({exc}), fazendo fallback para Whisper"
-                )
-        # DEBUG - REMOVE LATER
-        print("[DEBUG] Transcriber: usando Whisper local")
-        return self._transcribe_whisper(audio_path, keywords, on_chunk)
+        try:
+            print("[DEBUG] Transcriber: tentando Groq...")
+            result = self._transcribe_groq(audio_path, keywords, prompt_text, on_chunk)
+            print("[DEBUG] Transcriber: Groq OK")
+            return result
+        except TranscriptionError as exc:
+            print(
+                f"[DEBUG] Transcriber: Groq falhou ({exc}), "
+                f"fazendo fallback para Gemini"
+            )
+
+        print("[DEBUG] Transcriber: usando Gemini (fallback)")
+        return self._transcribe_gemini(audio_path, prompt_text, keywords, on_chunk)
 
     # ------------------------------------------------------------------
     # Gemini backend
     # ------------------------------------------------------------------
 
     def _transcribe_gemini(
-        self, audio_path: Path, prompt_text: str, keywords: list[str], on_chunk: callable = None
+        self,
+        audio_path: Path,
+        prompt_text: str,
+        keywords: list[str],
+        on_chunk: callable = None,
     ) -> str:
-        """Upload audio to Gemini Files API and request transcription."""
+        """Upload audio to Gemini Files API and request transcription.
+
+        Uses generate_content_stream for word-by-word streaming via on_chunk.
+        """
         try:
             from google import genai
             from google.genai import types
@@ -140,14 +177,13 @@ class Transcriber:
         # Upload the audio file to Files API (SDK >= 1.0 uses file=, not path=)
         try:
             uploaded_file = client.files.upload(file=str(audio_path))
-            # DEBUG - REMOVE LATER
             print(f"[DEBUG] Gemini: upload concluido -> {uploaded_file.name}")
         except Exception as exc:
-            raise TranscriptionError(f"Falha ao fazer upload do audio: {exc}") from exc
+            raise TranscriptionError(
+                f"Falha ao fazer upload do audio: {exc}"
+            ) from exc
 
         try:
-            # SDK >= 1.0 simplified API: pass file object + string directly.
-            # Using generate_content_stream to get chunks directly as requested.
             response_stream = client.models.generate_content_stream(
                 model=GEMINI_MODEL,
                 contents=[uploaded_file, "Transcreva o audio acima com precisao."],
@@ -155,35 +191,38 @@ class Transcriber:
                     system_instruction=system_instruction,
                 ),
             )
-            
+
             full_text_chunks = []
             for chunk in response_stream:
                 if chunk and hasattr(chunk, "text") and chunk.text:
                     full_text_chunks.append(chunk.text)
                     if on_chunk:
                         on_chunk(chunk.text)
-            
-            self._last_was_stream = True
+
             final_text = "".join(full_text_chunks).strip()
-            # DEBUG - REMOVE LATER
-            print(f"[DEBUG] Gemini: resposta recebida via stream ({len(final_text)} chars)")
+            print(
+                f"[DEBUG] Gemini: resposta recebida via stream "
+                f"({len(final_text)} chars)"
+            )
             return final_text
 
         except Exception as exc:
-            # Fallback for deadline exceeded and other API issues
             from google.api_core.exceptions import DeadlineExceeded
+
             if isinstance(exc, DeadlineExceeded) or "504" in str(exc):
-                raise TranscriptionError("A conexao expirou (504: DEADLINE_EXCEEDED).") from exc
-            
-            raise TranscriptionError(f"Erro na requisicao ao Gemini: {exc}") from exc
+                raise TranscriptionError(
+                    "A conexao expirou (504: DEADLINE_EXCEEDED)."
+                ) from exc
+
+            raise TranscriptionError(
+                f"Erro na requisicao ao Gemini: {exc}"
+            ) from exc
         finally:
             # Best-effort cleanup of the uploaded file
             try:
                 client.files.delete(name=uploaded_file.name)
             except Exception:
                 pass
-
-        return final_text
 
     @staticmethod
     def _build_system_instruction(prompt_text: str, keywords: list[str]) -> str:
@@ -201,132 +240,96 @@ class Transcriber:
         return "\n\n".join(parts)
 
     # ------------------------------------------------------------------
-    # Whisper backend
+    # Groq backend
     # ------------------------------------------------------------------
 
-    def _transcribe_whisper(self, audio_path: Path, keywords: list[str], on_chunk: callable = None) -> str:
-        """Transcribe using faster-whisper with lazy model loading.
+    def _transcribe_groq(
+        self,
+        audio_path: Path,
+        keywords: list[str],
+        prompt_text: str,
+        on_chunk: callable = None,
+    ) -> str:
+        """Transcribe using Groq Whisper + review agent.
 
-        Handles CUDA runtime errors (e.g. libcublas not found) by falling
-        back to a CPU-only model on the first inference failure.
+        Only called for files <= 10 minutes (longer audio is redirected to
+        Gemini at the transcribe() routing layer). Groq returns full text
+        in a single API call (non-streaming) — the result is delivered
+        as a single chunk via on_chunk.
         """
-        model = self._get_whisper_model()
-        initial_prompt = ", ".join(keywords) if keywords else None
+        result = self._transcribe_groq_single(audio_path, keywords, prompt_text)
+        if on_chunk:
+            on_chunk(result)
+        return result
+
+    def _transcribe_groq_single(
+        self,
+        audio_path: Path,
+        keywords: list[str],
+        prompt_text: str,
+    ) -> str:
+        """Transcribe a single audio file with Groq Whisper (no chunking)."""
+        try:
+            from groq import Groq
+        except ImportError as exc:
+            raise TranscriptionError(
+                "groq nao instalado. Execute: uv add groq"
+            ) from exc
+
+        # Validate size for single chunk (should already be ≤25MB from routing)
+        if audio_path.stat().st_size > 25 * 1024 * 1024:
+            raise TranscriptionError(
+                "Chunk muito grande para a API do Groq (> 25MB)."
+            )
+
+        client = Groq(api_key=GROQ_API_KEY)
+        initial_prompt = ", ".join(keywords) if keywords else ""
 
         try:
-            segments, _ = model.transcribe(
-                str(audio_path),
-                initial_prompt=initial_prompt,
-                language="pt",  # Portuguese — change if needed
-                beam_size=5,
-                vad_filter=True,  # Remove silence automatically
-            )
-            self._last_was_stream = False
-            full_text = []
-            for seg in segments:
-                text = seg.text.strip()
-                if text:
-                    full_text.append(text)
-                    if on_chunk:
-                        on_chunk(text + " ")
-            return " ".join(full_text).strip()
+            with open(audio_path, "rb") as file:
+                transcription = client.audio.transcriptions.create(
+                    file=file,
+                    model="whisper-large-v3-turbo",
+                    prompt=initial_prompt,
+                    response_format="text",
+                    language="pt",
+                    temperature=0.0,
+                )
+            raw_text = str(transcription).strip()
         except Exception as exc:
-            err_msg = str(exc)
-            # ctranslate2 loads CUDA libs lazily — first .transcribe() may fail
-            # even if WhisperModel() succeeded.
-            if "lib" in err_msg.lower() and (
-                "cuda" in err_msg.lower()
-                or "cublas" in err_msg.lower()
-                or "cannot be loaded" in err_msg.lower()
-            ):
-                # DEBUG - REMOVE LATER
-                print(
-                    f"[DEBUG] Whisper: erro CUDA em runtime ({exc}), recarregando em CPU..."
-                )
-                self._force_cpu_model()
-                try:
-                    segments, _ = self._whisper_model.transcribe(
-                        str(audio_path),
-                        initial_prompt=initial_prompt,
-                        language="pt",
-                        beam_size=5,
-                        vad_filter=True,
-                    )
-                    # DEBUG - REMOVE LATER
-                    print("[DEBUG] Whisper: transcricao em CPU (fallback) OK")
-                    self._last_was_stream = False
-                    full_text = []
-                    for seg in segments:
-                        text = seg.text.strip()
-                        if text:
-                            full_text.append(text)
-                            if on_chunk:
-                                on_chunk(text + " ")
-                    return " ".join(full_text).strip()
-                except Exception as cpu_exc:
-                    raise TranscriptionError(
-                        f"Whisper falhou em GPU e tambem em CPU: {cpu_exc}"
-                    ) from cpu_exc
-            raise TranscriptionError(f"Erro na transcricao com Whisper: {exc}") from exc
+            raise TranscriptionError(
+                f"Erro na transcricao com Groq: {exc}"
+            ) from exc
 
-    def _force_cpu_model(self) -> None:
-        """Reload the Whisper model on CPU with int8 (CUDA unavailable fallback)."""
-        from faster_whisper import WhisperModel
+        # --- Review step: grammar / punctuation correction ---
+        print("[DEBUG] Groq: chamando TranscriptionReviewAgent...")
+        try:
+            from app.agents import TranscriptionReviewAgent
 
-        self._whisper_model = WhisperModel(
-            WHISPER_MODEL, device="cpu", compute_type="int8"
-        )
-        # DEBUG - REMOVE LATER
-        print("[DEBUG] Whisper: modelo recarregado em CPU int8")
-
-    def _get_whisper_model(self):
-        """Return the Whisper model, loading it into memory on first call.
-
-        Tries CUDA first; if CUDA libs are missing, falls back to CPU automatically.
-        """
-        if self._whisper_model is None:
-            try:
-                from faster_whisper import WhisperModel
-            except ImportError as exc:
-                raise TranscriptionError(
-                    "faster-whisper nao instalado. Execute: uv add faster-whisper"
-                ) from exc
-
-            device = WHISPER_DEVICE
-            compute_type = WHISPER_COMPUTE_TYPE
-
-            # DEBUG - REMOVE LATER
-            print(
-                f"[DEBUG] Whisper: carregando modelo '{WHISPER_MODEL}' | device={device} | compute_type={compute_type}"
+            reviewer = TranscriptionReviewAgent()
+            review_result = reviewer.review(
+                transcribed_text=raw_text,
+                keywords=keywords,
+                prompt_text=prompt_text,
             )
 
-            try:
-                self._whisper_model = WhisperModel(
-                    WHISPER_MODEL,
-                    device=device,
-                    compute_type=compute_type,
+            print(
+                f"[DEBUG] Groq review: changes={review_result.has_changes}, "
+                f"near_matches={review_result.near_matches}"
+            )
+            if review_result.diff_lines:
+                print(
+                    "[DEBUG] Groq diff:\n"
+                    + "\n".join(review_result.diff_lines)
                 )
-                # DEBUG - REMOVE LATER
-                print(f"[DEBUG] Whisper: modelo carregado com sucesso em {device}")
-            except Exception as cuda_exc:  # noqa: BLE001
-                # CUDA libraries missing or device not available — retry on CPU
-                # DEBUG - REMOVE LATER
-                print(f"[DEBUG] Whisper: falha ao carregar em {device}: {cuda_exc}")
-                print("[DEBUG] Whisper: tentando fallback para CPU...")
-                try:
-                    self._whisper_model = WhisperModel(
-                        WHISPER_MODEL,
-                        device="cpu",
-                        compute_type="int8",
-                    )
-                    # DEBUG - REMOVE LATER
-                    print("[DEBUG] Whisper: modelo carregado em CPU (fallback)")
-                except Exception as cpu_exc:
-                    raise TranscriptionError(
-                        f"Nao foi possivel carregar o Whisper em GPU nem CPU: {cpu_exc}"
-                    ) from cpu_exc
 
-        return self._whisper_model
+            return review_result.corrected_text
+        except Exception as exc:
+            # Graceful degradation: if review fails, return raw transcription
+            print(
+                f"[DEBUG] Groq review failed ({exc}), usando texto bruto."
+            )
+            return raw_text
 
     # ------------------------------------------------------------------
     # Title Generation
@@ -345,7 +348,11 @@ class Transcriber:
 
         client = genai.Client(api_key=GOOGLE_API_KEY)
 
-        system_instruction = "Você é um assistente especialista em sumarização. Crie um título descritivo para este texto usando no máximo 5 palavras. Produza apenas o título e nada mais. Não use aspas."
+        system_instruction = (
+            "Você é um assistente especialista em sumarização. "
+            "Crie um título descritivo para este texto usando no máximo "
+            "5 palavras. Produza apenas o título e nada mais. Não use aspas."
+        )
 
         try:
             response = client.models.generate_content(
@@ -357,5 +364,5 @@ class Transcriber:
             )
             return response.text.strip()
         except Exception as exc:
-            print(f"[DEBUG] Gemeni title generation failed: {exc}")
+            print(f"[DEBUG] Gemini title generation failed: {exc}")
             return "Nova Sessão"

@@ -57,7 +57,13 @@ APP_LANGUAGE: str = _optional("APP_LANGUAGE", "pt")
 i18n.set("locale", APP_LANGUAGE)
 
 # ---------------------------------------------------------------------------
-# Whisper (local inference)
+# Groq (cloud inference)
+# ---------------------------------------------------------------------------
+GROQ_API_KEY: str = _require("GROQ_API_KEY")
+GROQ_REVIEW_MODEL: str = _optional("GROQ_REVIEW_MODEL", "llama-3.1-8b-instant")
+
+# ---------------------------------------------------------------------------
+# Whisper (local inference — kept for AudioValidator VAD)
 # ---------------------------------------------------------------------------
 WHISPER_MODEL: str = _optional("WHISPER_MODEL", "base")
 WHISPER_DEVICE: str = _optional("WHISPER_DEVICE", "cpu")

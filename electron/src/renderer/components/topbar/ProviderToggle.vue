@@ -20,11 +20,11 @@
 import { ref } from 'vue';
 import { t } from '../../i18n';
 
-const selected = ref<'auto' | 'google' | 'whisper'>('auto');
+const selected = ref<'auto' | 'google' | 'groq'>('google');
 
 const options = [
   { value: 'auto' as const, label: t('provider.auto') },
   { value: 'google' as const, label: t('provider.google') },
-  { value: 'whisper' as const, label: t('provider.whisper') },
+  { value: 'groq' as const, label: t('provider.groq') },
 ];
 </script>

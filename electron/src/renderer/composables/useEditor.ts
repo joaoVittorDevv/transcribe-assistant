@@ -1,9 +1,14 @@
 import { ref } from 'vue';
 
-const editorRef = ref<{ clearEditor: () => void } | null>(null);
+interface EditorAPI {
+  clearEditor: () => void;
+  getMarkdown: () => string;
+}
+
+const editorRef = ref<EditorAPI | null>(null);
 
 export function useEditor() {
-  function registerEditor(ref: { clearEditor: () => void }) {
+  function registerEditor(ref: EditorAPI) {
     editorRef.value = ref;
   }
 
@@ -11,5 +16,9 @@ export function useEditor() {
     editorRef.value?.clearEditor();
   }
 
-  return { editorRef, registerEditor, clearEditor };
+  function getMarkdown(): string {
+    return editorRef.value?.getMarkdown() ?? '';
+  }
+
+  return { editorRef, registerEditor, clearEditor, getMarkdown };
 }

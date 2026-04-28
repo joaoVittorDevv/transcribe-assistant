@@ -1,5 +1,6 @@
 import { ref, onUnmounted } from 'vue';
 import { useTabs } from './useTabs';
+import { useDefaultPrompt } from './useDefaultPrompt';
 import type { ElectronAPI } from '../types/global';
 
 export type TranscriptionState = 'IDLE' | 'RECORDING' | 'TRANSCRIBING';
@@ -19,6 +20,7 @@ let quillCursorIndex = 0;
 export function useTranscriptionState() {
   const { activeTabId, updateContent } = useTabs();
   const api = window.electronAPI as ElectronAPI;
+  const { promptData } = useDefaultPrompt();
 
   async function transcribeFile(wavPath: string) {
     let accumulated = '';
@@ -29,6 +31,8 @@ export function useTranscriptionState() {
 
       const formData = new FormData();
       formData.append('audio', new Blob([arrayBuffer], { type: 'audio/wav' }), 'audio.wav');
+      formData.append('prompt_text', promptData.value.texto_prompt);
+      formData.append('keywords', promptData.value.keywords.join(', '));
 
       const response = await fetch(`http://localhost:18763/transcribe`, {
         method: 'POST',

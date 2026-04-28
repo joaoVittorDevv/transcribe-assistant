@@ -1,12 +1,10 @@
 <template>
   <div class="app-shell">
-    <Sidebar />
     <MainWorkspace />
   </div>
 </template>
 
 <script setup lang="ts">
-import Sidebar from './components/layout/Sidebar.vue';
 import MainWorkspace from './components/layout/MainWorkspace.vue';
 </script>
 

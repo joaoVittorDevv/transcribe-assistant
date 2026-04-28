@@ -6,7 +6,7 @@
       <div class="flex-1"></div>
       <NetworkStatus />
       <LanguageToggle />
-      <TopActionButtons />
+      <TopActionButtons @open-settings="showSettings = true" />
     </div>
 
     <!-- Tab Bar -->
@@ -23,10 +23,14 @@
     <div class="flex-shrink-0">
       <BottomActionBar />
     </div>
+
+    <!-- Prompt Settings Modal -->
+    <PromptModal :visible="showSettings" @close="showSettings = false" />
   </div>
 </template>
 
 <script setup lang="ts">
+import { ref } from 'vue';
 import ProviderToggle from '../topbar/ProviderToggle.vue';
 import NetworkStatus from '../topbar/NetworkStatus.vue';
 import LanguageToggle from '../topbar/LanguageToggle.vue';
@@ -34,6 +38,9 @@ import TopActionButtons from '../topbar/TopActionButtons.vue';
 import TabBar from '../tabs/TabBar.vue';
 import TextEditor from '../editor/TextEditor.vue';
 import BottomActionBar from '../bottom/BottomActionBar.vue';
+import PromptModal from '../prompt/PromptModal.vue';
+
+const showSettings = ref(false);
 </script>
 
 <style scoped>

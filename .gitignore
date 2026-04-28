@@ -29,3 +29,5 @@ docs/
 # Logs
 *.log
 node_modules/
+.specs/
+graphify-out/

@@ -308,6 +308,69 @@ async def cancel_session(session_id: str):
     return CancelResponse(ok=True, message="Session cancelled")
 
 
+# ---------------------------------------------------------------------------
+# Prompt management
+# ---------------------------------------------------------------------------
+
+from pydantic import BaseModel as PydanticBaseModel
+
+
+class PromptResponse(PydanticBaseModel):
+    id: int | None = None
+    nome: str = ""
+    texto_prompt: str = ""
+    keywords: list[str] = []
+
+
+class PromptUpdateRequest(PydanticBaseModel):
+    nome: str
+    texto_prompt: str
+    keywords: list[str]
+
+
+@app.get("/prompt/default", response_model=PromptResponse)
+async def get_default_prompt():
+    """GET /prompt/default — Return the default prompt and its keywords."""
+    default = db.get_default_prompt()
+    if not default:
+        return PromptResponse()
+    keywords = [
+        row["palavra"] for row in db.get_keywords_by_prompt(default["id"])
+    ]
+    return PromptResponse(
+        id=default["id"],
+        nome=default["nome"],
+        texto_prompt=default["texto_prompt"],
+        keywords=keywords,
+    )
+
+
+@app.put("/prompt/default", response_model=PromptResponse)
+async def update_default_prompt(body: PromptUpdateRequest):
+    """PUT /prompt/default — Update or create the default prompt and keywords."""
+    if not body.nome.strip():
+        raise HTTPException(status_code=400, detail="Nome nao pode ser vazio")
+
+    default = db.get_default_prompt()
+    if default:
+        db.update_prompt(default["id"], body.nome, body.texto_prompt, is_default=True)
+        pid = default["id"]
+    else:
+        pid = db.create_prompt(body.nome, body.texto_prompt, is_default=True)
+
+    db.replace_keywords(pid, body.keywords)
+
+    keywords = [
+        row["palavra"] for row in db.get_keywords_by_prompt(pid)
+    ]
+    return PromptResponse(
+        id=pid,
+        nome=body.nome,
+        texto_prompt=body.texto_prompt,
+        keywords=keywords,
+    )
+
+
 # Allow `python -m app.server` or `uvicorn app.server:app`
 if __name__ == "__main__":
     import uvicorn
