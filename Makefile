@@ -1,20 +1,16 @@
-.PHONY: run run-flet run-electron test-ssl test-httpx test-httpx-post test-httpx2 test-genai test-network test-all
+.PHONY: run run-flet test-ssl test-httpx test-httpx-post test-httpx2 test-genai test-network test-all
 
 # ==========================================
 # Aplicação Principal
 # ==========================================
 
-# Iniciar o sistema Transcribe Assistant (Tkinter Padrão)
+# Iniciar o sistema Transcribe Assistant com interface Electron (Vue 3)
 run:
-	uv run python main.py
+	cd electron && npm run start
 
 # Iniciar o sistema Transcribe Assistant com interface Flet
 run-flet:
 	uv run python main_flet.py
-
-# Iniciar o sistema Transcribe Assistant com interface Electron (Vue 3)
-run-electron:
-	cd electron && npm run start
 
 # ==========================================
 # Testes de Conectividade e Integração

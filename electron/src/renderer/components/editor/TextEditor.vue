@@ -1,6 +1,18 @@
 <template>
   <div class="editor-wrapper flex flex-col flex-1 min-h-0">
     <EditorToolbar :activeFormats="activeFormats" @format="handleFormat" />
+    <FindReplaceBar
+      ref="findBarRef"
+      :visible="findBarVisible"
+      :matchCount="matches.length"
+      :activeMatchIndex="activeMatchIdx"
+      @search="onFind"
+      @next="navigateMatch('next')"
+      @prev="navigateMatch('prev')"
+      @replace="replaceOne"
+      @replace-all="replaceAllMatches"
+      @close="closeFindBar"
+    />
     <div
       class="flex-1 glass-surface rounded-xl overflow-hidden focus-within:ring-2 focus-within:ring-accent-blue/50 transition-shadow duration-150"
     >
@@ -14,11 +26,13 @@ import { ref, reactive, onMounted, onUnmounted, watch } from 'vue';
 import Quill from 'quill';
 import 'quill/dist/quill.snow.css';
 import EditorToolbar from './EditorToolbar.vue';
+import FindReplaceBar from './FindReplaceBar.vue';
 import { useTabs } from '../../composables/useTabs';
 import { useEditor } from '../../composables/useEditor';
 import type { ElectronAPI } from '../../types/global';
 
 const editorEl = ref<HTMLElement | null>(null);
+const findBarRef = ref<InstanceType<typeof FindReplaceBar> | null>(null);
 let quill: Quill | null = null;
 
 const { activeTabId, getActiveTab, updateContent } = useTabs();
@@ -28,6 +42,147 @@ const api = window.electronAPI as ElectronAPI;
 const activeFormats = reactive<Set<string>>(new Set());
 
 let cleanupInsertText: (() => void) | null = null;
+
+// ------------------------------------------------------------------
+// Find & Replace state
+// ------------------------------------------------------------------
+
+interface Match {
+  index: number;
+  length: number;
+}
+
+const findBarVisible = ref(false);
+const matches = ref<Match[]>([]);
+const activeMatchIdx = ref(0);
+let lastSearchText = '';
+
+function findAllMatches(searchText: string): Match[] {
+  if (!quill || !searchText) return [];
+  const fullText = quill.getText();
+  const searchLower = searchText.toLowerCase();
+  const textLower = fullText.toLowerCase();
+  const result: Match[] = [];
+  let startIndex = 0;
+  while ((startIndex = textLower.indexOf(searchLower, startIndex)) !== -1) {
+    result.push({ index: startIndex, length: searchText.length });
+    startIndex += searchText.length;
+  }
+  return result;
+}
+
+function applyHighlights(activeIdx: number) {
+  if (!quill) return;
+  for (let i = 0; i < matches.value.length; i++) {
+    const m = matches.value[i];
+    const color = i === activeIdx ? '#F97316' : '#FBBF24';
+    quill.formatText(m.index, m.length, 'background', color);
+  }
+}
+
+function clearHighlights() {
+  if (!quill) return;
+  for (const m of matches.value) {
+    quill.formatText(m.index, m.length, 'background', false);
+  }
+}
+
+function onFind(searchText: string) {
+  clearHighlights();
+  matches.value = findAllMatches(searchText);
+  activeMatchIdx.value = 0;
+  lastSearchText = searchText;
+
+  if (matches.value.length > 0) {
+    // Only highlight — do NOT move cursor or focus the editor
+    applyHighlights(0);
+  }
+}
+
+function navigateMatch(direction: 'next' | 'prev') {
+  if (matches.value.length === 0) return;
+  const prevIdx = activeMatchIdx.value;
+  if (direction === 'next') {
+    activeMatchIdx.value = (activeMatchIdx.value + 1) % matches.value.length;
+  } else {
+    activeMatchIdx.value =
+      (activeMatchIdx.value - 1 + matches.value.length) % matches.value.length;
+  }
+  // Update highlight colors for previous and new active
+  if (quill) {
+    quill.formatText(
+      matches.value[prevIdx].index,
+      matches.value[prevIdx].length,
+      'background',
+      '#FBBF24',
+    );
+    quill.formatText(
+      matches.value[activeMatchIdx.value].index,
+      matches.value[activeMatchIdx.value].length,
+      'background',
+      '#F97316',
+    );
+  }
+  const active = matches.value[activeMatchIdx.value];
+  quill!.setSelection(active.index, active.length);
+  quill!.scrollSelectionIntoView();
+}
+
+function replaceOne() {
+  // replaceText is accessed via FindReplaceBar's exposed ref
+  if (!quill || matches.value.length === 0) return;
+  const replaceText = findBarRef.value?.replaceText;
+  if (!replaceText) return;
+
+  const active = matches.value[activeMatchIdx.value];
+  quill.deleteText(active.index, active.length);
+  quill.insertText(active.index, replaceText);
+  // Re-search after replace
+  onFind(lastSearchText);
+}
+
+function replaceAllMatches() {
+  if (!quill || matches.value.length === 0) return;
+  const replaceText = findBarRef.value?.replaceText;
+  if (!replaceText) return;
+
+  // Replace from end to start to preserve indices
+  const sorted = [...matches.value].sort((a, b) => b.index - a.index);
+  for (const m of sorted) {
+    quill.deleteText(m.index, m.length);
+    quill.insertText(m.index, replaceText);
+  }
+  onFind(lastSearchText);
+}
+
+function closeFindBar() {
+  clearHighlights();
+  matches.value = [];
+  activeMatchIdx.value = 0;
+  lastSearchText = '';
+  findBarVisible.value = false;
+}
+
+function openFindBar() {
+  findBarVisible.value = true;
+}
+
+function onEditorKeydown(e: KeyboardEvent) {
+  const target = e.target as HTMLElement;
+
+  if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
+    e.preventDefault();
+    openFindBar();
+    return;
+  }
+
+  if (e.key === 'Escape' && findBarVisible.value) {
+    // Only close if not typing in the find bar inputs
+    if (target.closest('.find-replace-bar')) return;
+    e.preventDefault();
+    closeFindBar();
+  }
+}
 
 function computeActiveFormats(range: { index: number; length: number } | null) {
   activeFormats.clear();
@@ -227,9 +382,13 @@ onMounted(() => {
 
   // Register editor API (clear + markdown export)
   registerEditor({ clearEditor, getMarkdown: quillToMarkdown });
+
+  // Ctrl+F / Escape find bar keyboard handler
+  document.addEventListener('keydown', onEditorKeydown);
 });
 
 onUnmounted(() => {
+  document.removeEventListener('keydown', onEditorKeydown);
   quill = null;
   cleanupInsertText?.();
 });

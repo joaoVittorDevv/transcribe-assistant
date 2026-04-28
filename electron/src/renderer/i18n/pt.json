@@ -27,5 +27,13 @@
   "prompt.add_keyword_placeholder": "Adicionar palavra...",
   "prompt.save": "Salvar",
   "prompt.saved": "Prompt salvo com sucesso!",
-  "transcription.system_gemini_hint": "Audio do sistema usa Google Gemini para transcricao"
+  "transcription.system_gemini_hint": "Audio do sistema usa Google Gemini para transcricao",
+  "find.search_placeholder": "Buscar...",
+  "find.replace_placeholder": "Substituir...",
+  "find.next": "Próximo",
+  "find.previous": "Anterior",
+  "find.replace": "Substituir",
+  "find.replace_all": "Substituir tudo",
+  "find.no_results": "Nenhum resultado",
+  "find.close": "Fechar"
 }
