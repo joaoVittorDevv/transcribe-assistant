@@ -61,15 +61,16 @@ async function importAudio() {
     const lines = buffer.split('\n');
     buffer = lines.pop() ?? '';
     for (const line of lines) {
-      if (line.startsWith('data: ')) {
-        const text = line.slice(6).trim();
-        if (text === '[DONE]') {
-          updateContent(activeTabId.value, accumulated);
-          return;
-        }
-        if (!text.startsWith('[ERROR]')) {
-          accumulated += text;
-        }
+      if (!line.startsWith('data:')) continue;
+      // Extract payload preserving trailing whitespace (backend controls word spacing)
+      let text = line.slice(5);
+      if (text.startsWith(' ')) text = text.slice(1);
+      if (text === '[DONE]') {
+        updateContent(activeTabId.value, accumulated);
+        return;
+      }
+      if (!text.startsWith('[ERROR]')) {
+        accumulated += text;
       }
     }
   }

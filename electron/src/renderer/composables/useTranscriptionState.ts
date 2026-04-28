@@ -52,29 +52,29 @@ export function useTranscriptionState() {
         const lines = buffer.split('\n');
         buffer = lines.pop() ?? '';
         for (const line of lines) {
-          const trimmed = line.trim();
-          if (trimmed.startsWith('data:')) {
-            const dataStr = trimmed.slice(5).trim();
-            if (dataStr === '[DONE]') {
-              state.value = 'IDLE';
-              elapsedSeconds.value = 0;
-              return;
-            }
-            if (dataStr.startsWith('[ERROR]')) {
-              console.error('[transcription]', dataStr);
-              state.value = 'IDLE';
-              elapsedSeconds.value = 0;
-              return;
-            }
-            try {
-              const parsed = JSON.parse(dataStr);
-              const text = typeof parsed === 'string' ? parsed : parsed.text ?? '';
-              // Backend sends complete words with trailing whitespace (word-boundary buffering)
-              api.insertTextAtCursor(text);
-            } catch {
-              // Server sends raw text chunks not wrapped in JSON — insert directly
-              api.insertTextAtCursor(dataStr);
-            }
+          if (!line.startsWith('data:')) continue;
+          // Extract payload preserving trailing whitespace (backend controls word spacing)
+          let dataStr = line.slice(5);
+          if (dataStr.startsWith(' ')) dataStr = dataStr.slice(1);
+          if (dataStr === '[DONE]') {
+            state.value = 'IDLE';
+            elapsedSeconds.value = 0;
+            return;
+          }
+          if (dataStr.startsWith('[ERROR]')) {
+            console.error('[transcription]', dataStr);
+            state.value = 'IDLE';
+            elapsedSeconds.value = 0;
+            return;
+          }
+          try {
+            const parsed = JSON.parse(dataStr);
+            const text = typeof parsed === 'string' ? parsed : parsed.text ?? '';
+            // Backend sends complete words with trailing whitespace (word-boundary buffering)
+            api.insertTextAtCursor(text);
+          } catch {
+            // Server sends raw text chunks not wrapped in JSON — insert directly
+            api.insertTextAtCursor(dataStr);
           }
         }
       }
