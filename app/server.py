@@ -24,6 +24,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app import database as db, network_monitor, transcriber
+from app.config import VAULT_PATH
 
 logger = logging.getLogger("app.server")
 
@@ -160,6 +161,14 @@ async def _transcription_events(
             if item is None:
                 break
 
+            # Check for error marker before word-boundary processing
+            if isinstance(item, str) and item.startswith("[ERROR]"):
+                with _session_lock:
+                    if session_id in _active_sessions:
+                        _active_sessions[session_id]["status"] = "error"
+                yield _sse_frame("chunk", item)
+                break
+
             # Append to word buffer
             word_buffer += item
 
@@ -192,9 +201,26 @@ async def _transcription_events(
     finally:
         # Clean up temp audio file
         with _session_lock:
-            temp_path_str = _active_sessions.get(session_id, {}).get("temp_path")
+            session_data = _active_sessions.get(session_id, {})
+            temp_path_str = session_data.get("temp_path")
+            session_status = session_data.get("status", "error")
+
         if temp_path_str:
-            Path(temp_path_str).unlink(missing_ok=True)
+            temp_file = Path(temp_path_str)
+            # If transcription failed, preserve audio in Vault
+            if session_status == "error" and temp_file.exists():
+                try:
+                    VAULT_PATH.mkdir(parents=True, exist_ok=True)
+                    import shutil
+                    vault_name = f"transcribe_{session_id[:12]}.wav"
+                    shutil.copy2(temp_file, VAULT_PATH / vault_name)
+                    logger.info(
+                        "Transcription failed — audio preserved in Vault: %s",
+                        vault_name,
+                    )
+                except Exception as e:
+                    logger.error("Failed to copy audio to Vault: %s", e)
+            temp_file.unlink(missing_ok=True)
 
     with _session_lock:
         if session_id in _active_sessions:

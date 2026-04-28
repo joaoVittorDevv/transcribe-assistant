@@ -9,7 +9,9 @@ export interface ElectronAPI {
   onAudioStatus(callback: (status: AudioStatus) => void): () => void;
   openFilePicker(accept: string[]): Promise<string | null>;
   readFile(path: string): Promise<ArrayBuffer | null>;
+  deleteFile(path: string): Promise<boolean>;
   insertTextAtCursor(text: string): void;
+  onInsertText(callback: (text: string) => void): () => void;
 }
 
 declare global {

@@ -132,6 +132,16 @@ function setupIpcHandlers(): void {
     mainWindow?.webContents.send('insert-text', text);
     return true;
   });
+
+  ipcMain.handle('delete-file', async (_event, filePath: string) => {
+    try {
+      fs.unlinkSync(filePath);
+      return true;
+    } catch (err) {
+      console.error('[delete-file] error:', err);
+      return false;
+    }
+  });
 }
 
 // ---------------------------------------------------------------------------

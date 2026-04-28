@@ -8,7 +8,7 @@
 
     <!-- Center: Record button -->
     <div class="flex-1 flex items-center justify-center gap-3">
-      <RecordButton :state="transcriptionState" @click="handleRecordClick" />
+      <RecordButton :state="transcriptionState" @click="handleRecordClick" @mode-change="handleModeChange" />
       <CancelButton :visible="isShowingCancel" @click="handleCancel" />
     </div>
 
@@ -41,7 +41,7 @@ import { useEditor } from '../../composables/useEditor';
 import { useClipboard } from '../../composables/useClipboard';
 import { t } from '../../i18n';
 
-const { transcriptionState, elapsedSeconds, isShowingCancel, handleRecordClick, handleCancel } = useTranscriptionState();
+const { transcriptionState, elapsedSeconds, isShowingCancel, handleRecordClick, handleCancel, setMode } = useTranscriptionState();
 const { resetActiveTab } = useTabs();
 const { clearEditor, getMarkdown } = useEditor();
 const { copyToClipboard } = useClipboard();
@@ -54,5 +54,9 @@ function handleCopy() {
 function handleReset() {
   clearEditor();
   resetActiveTab();
+}
+
+function handleModeChange(mode: 'mic' | 'system') {
+  setMode(mode);
 }
 </script>

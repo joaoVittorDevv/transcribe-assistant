@@ -59,6 +59,10 @@ export function useTranscriptionState() {
           if (dataStr === '[DONE]') {
             state.value = 'IDLE';
             elapsedSeconds.value = 0;
+            // Clean up Vault file on successful transcription
+            if (wavPath) {
+              api.deleteFile(wavPath).catch(() => {});
+            }
             return;
           }
           if (dataStr.startsWith('[ERROR]')) {

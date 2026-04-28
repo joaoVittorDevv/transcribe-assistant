@@ -80,3 +80,8 @@ NETWORK_CHECK_INTERVAL: int = int(_optional("NETWORK_CHECK_INTERVAL", "10"))
 # Database
 # ---------------------------------------------------------------------------
 DATABASE_PATH: Path = _ROOT / _optional("DATABASE_PATH", "transcriber_data.db")
+
+# ---------------------------------------------------------------------------
+# Vault — audio file safe storage
+# ---------------------------------------------------------------------------
+VAULT_PATH: Path = _ROOT / _optional("VAULT_PATH", "Vault")

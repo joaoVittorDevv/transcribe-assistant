@@ -21,6 +21,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from app.audio_recorder import AudioRecorder
+from app.config import VAULT_PATH
 
 # ---------------------------------------------------------------------------
 # Recorder + event emitter
@@ -40,7 +41,7 @@ def _on_rms(rms: float) -> None:
 def _start(mode: str) -> None:
     global _recorder, _active
     _recorder = AudioRecorder(on_rms_update=_on_rms)
-    _recorder.start_recording(mode=mode)
+    _recorder.start_recording(source=mode)
     _active = True
     status = {"type": "status", "recording": True, "mode": mode}
     sys.stdout.write(json.dumps(status) + "\n")
@@ -52,11 +53,16 @@ def _stop() -> Path | None:
     if _recorder is None:
         return None
     try:
-        wav_path = _recorder.stop_recording()
+        # Save to Vault so audio is persisted even if transcription fails
+        wav_path = _recorder.stop_recording(save_dir=VAULT_PATH)
     except Exception:
         wav_path = None
     _active = False
-    status = {"type": "status", "recording": False, "wav_path": str(wav_path) if wav_path else None}
+    status = {
+        "type": "status",
+        "recording": False,
+        "wav_path": str(wav_path) if wav_path else None,
+    }
     sys.stdout.write(json.dumps(status) + "\n")
     sys.stdout.flush()
     return wav_path
