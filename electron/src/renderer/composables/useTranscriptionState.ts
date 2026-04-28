@@ -33,6 +33,8 @@ export function useTranscriptionState() {
       formData.append('audio', new Blob([arrayBuffer], { type: 'audio/wav' }), 'audio.wav');
       formData.append('prompt_text', promptData.value.texto_prompt);
       formData.append('keywords', promptData.value.keywords.join(', '));
+      formData.append('mode', currentMode === 'system' ? 'gemini' : 'auto');
+      formData.append('source', currentMode);
 
       const response = await fetch(`http://localhost:18763/transcribe`, {
         method: 'POST',

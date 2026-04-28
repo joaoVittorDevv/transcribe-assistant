@@ -30,9 +30,6 @@ _CHANNELS = 1  # Mono
 _DTYPE = "float32"  # sounddevice native float range [-1.0, 1.0]
 _BLOCK_SIZE = 1024  # Frames per callback — controls RMS update rate
 
-# parec settings
-_PAREC_SAMPLE_RATE = 44100  # parec outputs at the sink's sample rate
-_PAREC_CHANNELS = 2  # parec outputs stereo by default
 
 
 class AudioRecorder:
@@ -119,8 +116,8 @@ class AudioRecorder:
             cmd = [
                 "parec",
                 "-d", monitor_name,
-                "--rate", str(_PAREC_SAMPLE_RATE),
-                "--channels", str(_PAREC_CHANNELS),
+                "--rate", str(_SAMPLE_RATE),
+                "--channels", str(_CHANNELS),
                 "--format", "s16le",
             ]
 
@@ -149,7 +146,7 @@ class AudioRecorder:
 
     def _parec_reader(self) -> None:
         """Read audio data from parec subprocess in a background thread."""
-        bytes_per_frame = _PAREC_CHANNELS * 2  # 2 bytes per sample (s16le)
+        bytes_per_frame = _CHANNELS * 2  # 1 channel * 2 bytes/sample (s16le)
         target_bytes = _BLOCK_SIZE * bytes_per_frame
 
         try:
@@ -169,17 +166,6 @@ class AudioRecorder:
                 # Convert to numpy array
                 audio_data = np.array(samples, dtype=np.float32) / 32768.0
 
-                # If stereo, mix down to mono (average channels)
-                if _PAREC_CHANNELS == 2:
-                    audio_data = audio_data.reshape(-1, 2)
-                    audio_data = np.mean(audio_data, axis=1)
-
-                # Resample from _PAREC_SAMPLE_RATE to _SAMPLE_RATE
-                if _PAREC_SAMPLE_RATE != _SAMPLE_RATE:
-                    audio_data = self._resample(
-                        audio_data, _PAREC_SAMPLE_RATE, _SAMPLE_RATE
-                    )
-
                 # Compute RMS for VU meter
                 rms = float(np.sqrt(np.mean(audio_data**2)))
                 self._current_rms = min(rms * 3.0, 1.0)
@@ -192,17 +178,6 @@ class AudioRecorder:
 
         except Exception:
             pass
-
-    def _resample(self, data: np.ndarray, from_rate: int, to_rate: int) -> np.ndarray:
-        """Simple linear resampling."""
-        if from_rate == to_rate:
-            return data
-
-        ratio = to_rate / from_rate
-        new_length = int(len(data) * ratio)
-        indices = np.linspace(0, len(data) - 1, new_length)
-        resampled = np.interp(indices, np.arange(len(data)), data)
-        return resampled.astype(np.float32)
 
     def _get_default_sink_name(self) -> str | None:
         """Get the default sink name using pactl."""

@@ -113,6 +113,7 @@ async def _transcription_events(
     prompt_text: str,
     keywords: list[str],
     mode: str,
+    source: str = "mic",
 ):
     """Async generator that wraps blocking transcriber.transcribe() via a background thread.
 
@@ -139,6 +140,7 @@ async def _transcription_events(
                 keywords=keywords,
                 mode=mode,  # type: ignore[arg-type]
                 on_chunk=chunk_callback,
+                source=source,
             )
         except Exception as exc:
             logger.error("Transcription error: %s", exc)
@@ -266,6 +268,7 @@ async def transcribe(
     prompt_text: Annotated[str, Form()] = "",
     keywords: Annotated[str, Form()] = "",
     mode: Annotated[str, Form()] = "auto",
+    source: Annotated[str, Form()] = "mic",
 ):
     """POST /transcribe — Accept audio file, stream transcription via SSE.
 
@@ -300,7 +303,7 @@ async def transcribe(
     logger.info("Starting transcription session=%s mode=%s", sid, mode)
 
     return StreamingResponse(
-        _transcription_events(sid, temp_path, prompt_text, keywords_list, mode),
+        _transcription_events(sid, temp_path, prompt_text, keywords_list, mode, source),
         media_type="text/event-stream",
         headers={
             "X-Session-ID": sid,

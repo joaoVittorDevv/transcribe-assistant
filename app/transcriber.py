@@ -41,6 +41,63 @@ from app.config import (
 
 TranscriptionMode = Literal["auto", "gemini", "groq"]
 
+GEMINI_SYSTEM_AUDIO_INSTRUCTION = (
+    "Voce e um motor de transcricao de audio do sistema. "
+    "O audio que voce recebe e a captura do som que esta sendo reproduzido "
+    "no computador do usuario — como uma reuniao, video, podcast ou chamada. "
+    "Seu trabalho e transcrever esse audio com precisao.\n\n"
+    "REGRAS DE OURO -- SIGA TODAS SEM EXCECAO:\n\n"
+    "1. SAIDA EXCLUSIVA: Retorne APENAS e SOMENTE o texto transcrito do audio. "
+    "NADA mais. Sem prefixos, sem sufixos, sem notas, sem comentarios.\n\n"
+    "2. FIDELIDADE TOTAL: Transcreva exatamente o que foi falado. "
+    "Preserve interjeicoes ('ah', 'oh', 'hmm'), repeticoes, "
+    "e palavras incompletas tal como foram pronunciadas.\n\n"
+    "3. IDENTIFICACAO DE INTERLOCUTORES (DIARIZACAO): "
+    "O audio pode conter MULTIPLAS PESSOAS falando. Voce DEVE:\n"
+    "   a) Identificar mudancas de interlocutor e marcar com '---' (tres hifens) "
+    "em uma linha separada antes da fala do novo interlocutor.\n"
+    "   b) Quando possivel, identificar os interlocutores por nome ou papel "
+    "usando o prefixo '@Nome:' antes da fala (ex: '@Joao: Bom dia').\n"
+    "   c) Quando nao for possivel identificar o nome, use '@Interlocutor 1:', "
+    "'@Interlocutor 2:', etc., mantendo consistencia ao longo da transcricao "
+    "(o mesmo numero para a mesma pessoa).\n"
+    "   d) Quando o mesmo interlocutor voltar a falar apos uma pausa ou apos "
+    "outra pessoa falar, reutilize o mesmo identificador ja atribuido a ele.\n"
+    "   e) Para falas muito curtas ou sobrepostas sem clareza de quem falou, "
+    "apenas transcreva sem atribuir interlocutor.\n\n"
+    "4. GLOSSARIO -- USO CONDICIONAL E RESTRITIVO: "
+    "O glossario serve apenas para desfazer ambiguidades genuinas "
+    "em trechos ininteligiveis do audio. REGRAS RIGOROSAS:\n"
+    "   a) NUNCA substitua uma palavra que ja faz sentido no contexto -- "
+    "mesmo que seja foneticamente semelhante a um termo do glossario.\n"
+    "   b) Apenas substitua quando: (i) o audio e genuinamente ininteligivel E "
+    "(ii) o termo do glossario faz sentido contextual PERFEITO.\n"
+    "   c) Se houver qualquer duvida, NAO substitua. Mantenha o que foi ouvido.\n\n"
+    "5. PONTUACAO: Adicione pontuacao natural baseada nas pausas "
+    "e entonacao do audio. Nao reformule frases, nao mude ordem de palavras."
+)
+
+GEMINI_SYSTEM_INSTRUCTION = (
+    "Voce e um motor de transcricao de audio. "
+    "Seu trabalho e APENAS transcrever o audio recebido palavra por palavra.\n\n"
+    "REGRAS DE OURO -- SIGA TODAS SEM EXCECAO:\n\n"
+    "1. SAIDA EXCLUSIVA: Retorne APENAS e SOMENTE o texto transcrito do audio. "
+    "NADA mais. Sem prefixos, sem sufixos, sem notas, sem comentarios.\n\n"
+    "2. FIDELIDADE TOTAL: Transcreva exatamente o que foi falado. "
+    "Preserve interjeicoes ('ah', 'oh', 'hmm'), repeticoes, "
+    "e palavras incompletas tal como foram pronunciadas.\n\n"
+    "3. GLOSSARIO -- USO CONDICIONAL E RESTRITIVO: "
+    "O glossario serve apenas para desfazer ambiguidades genuinas "
+    "em trechos ininteligiveis do audio. REGRAS RIGOROSAS:\n"
+    "   a) NUNCA substitua uma palavra que ja faz sentido no contexto -- "
+    "mesmo que seja foneticamente semelhante a um termo do glossario.\n"
+    "   b) Apenas substitua quando: (i) o audio e genuinamente ininteligivel E "
+    "(ii) o termo do glossario faz sentido contextual PERFEITO.\n"
+    "   c) Se houver qualquer duvida, NAO substitua. Mantenha o que foi ouvido.\n\n"
+    "4. PONTUACAO: Adicione pontuacao natural baseada nas pausas "
+    "e entonacao do audio. Nao reformule frases, nao mude ordem de palavras."
+)
+
 
 class TranscriptionError(Exception):
     """Raised when all available transcription backends fail."""
@@ -82,6 +139,7 @@ class Transcriber:
         keywords: list[str],
         mode: TranscriptionMode = "auto",
         on_chunk: callable = None,
+        source: str = "mic",
     ) -> str:
         """Transcribe an audio file and return the resulting text.
 
@@ -110,7 +168,7 @@ class Transcriber:
                 on_chunk(
                     "\n--- Transcrição via Google Gemini (áudio longo) ---\n\n"
                 )
-            return self._transcribe_gemini(audio_path, prompt_text, keywords, on_chunk)
+            return self._transcribe_gemini(audio_path, prompt_text, keywords, on_chunk, source)
 
         online = self._is_online_fn()
         if not online:
@@ -125,7 +183,7 @@ class Transcriber:
 
         if mode == "gemini":
             print(f"[DEBUG] Transcriber: modo GEMINI | is_online={online}")
-            return self._transcribe_gemini(audio_path, prompt_text, keywords, on_chunk)
+            return self._transcribe_gemini(audio_path, prompt_text, keywords, on_chunk, source)
 
         # mode == "auto"
         print(f"[DEBUG] Transcriber: modo AUTO | is_online={online}")
@@ -141,7 +199,7 @@ class Transcriber:
             )
 
         print("[DEBUG] Transcriber: usando Gemini (fallback)")
-        return self._transcribe_gemini(audio_path, prompt_text, keywords, on_chunk)
+        return self._transcribe_gemini(audio_path, prompt_text, keywords, on_chunk, source)
 
     # ------------------------------------------------------------------
     # Gemini backend
@@ -153,6 +211,7 @@ class Transcriber:
         prompt_text: str,
         keywords: list[str],
         on_chunk: callable = None,
+        source: str = "mic",
     ) -> str:
         """Upload audio to Gemini Files API and request transcription.
 
@@ -172,7 +231,7 @@ class Transcriber:
         )
 
         # Build system instruction combining prompt text and glossary
-        system_instruction = self._build_system_instruction(prompt_text, keywords)
+        system_instruction = self._build_system_instruction(prompt_text, keywords, source)
 
         # Upload the audio file to Files API (SDK >= 1.0 uses file=, not path=)
         try:
@@ -225,18 +284,34 @@ class Transcriber:
                 pass
 
     @staticmethod
-    def _build_system_instruction(prompt_text: str, keywords: list[str]) -> str:
-        """Combine prompt text and glossary into a Gemini system instruction."""
-        parts = []
+    def _build_system_instruction(prompt_text: str, keywords: list[str], source: str = "mic") -> str:
+        """Combine hardcoded audio transcription prompt with optional DB context and glossary.
+
+        Args:
+            prompt_text: DB prompt text (used as domain context only).
+            keywords: Glossary keywords for conditional correction.
+            source: "mic" for microphone, "system" for system audio capture.
+        """
+        base = (
+            GEMINI_SYSTEM_AUDIO_INSTRUCTION
+            if source == "system"
+            else GEMINI_SYSTEM_INSTRUCTION
+        )
+        parts = [base]
+
         if prompt_text:
-            parts.append(prompt_text)
-        if keywords:
-            glossary_line = (
-                "Glossario de termos especificos que podem aparecer na transcricao "
-                f"(use a grafia correta): {', '.join(keywords)}."
+            parts.append(
+                "CONTEXTO ADICIONAL (apenas informacao de dominio -- "
+                "as regras de transcricao acima sao absolutas):\n"
+                f"{prompt_text}"
             )
-            parts.append(glossary_line)
-        parts.append("Produza apenas o texto transcrito, sem comentarios adicionais.")
+
+        if keywords:
+            parts.append(
+                "GLOSSARIO (use APENAS conforme regra condicional 3 acima): "
+                f"{', '.join(keywords)}."
+            )
+
         return "\n\n".join(parts)
 
     # ------------------------------------------------------------------

@@ -26,5 +26,6 @@
   "prompt.glossary_label": "Keywords (Glossary)",
   "prompt.add_keyword_placeholder": "Add keyword...",
   "prompt.save": "Save",
-  "prompt.saved": "Prompt saved successfully!"
+  "prompt.saved": "Prompt saved successfully!",
+  "transcription.system_gemini_hint": "System audio uses Google Gemini for transcription"
 }
