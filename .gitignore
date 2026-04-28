@@ -32,3 +32,4 @@ docs/
 electron/node_modules
 
 graphify-out/
+.specs/

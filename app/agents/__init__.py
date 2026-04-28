@@ -1,5 +1,5 @@
 """app/agents — AI agents for the Transcribe Assistant."""
 
-from app.agents.text_reviewer_agent import TextReviewerAgent
+from app.agents.transcription_review_agent import TranscriptionReviewAgent
 
-__all__ = ["TextReviewerAgent"]
+__all__ = ["TranscriptionReviewAgent"]

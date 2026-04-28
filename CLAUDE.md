@@ -42,7 +42,7 @@ main.py → app.config (validates .env) → MainWindow (CustomTkinter)
 `Transcriber.transcribe()` has three modes:
 - `"auto"`: tries Groq first → falls back to Gemini on failure
 - `"gemini"`: forces Google Gemini Files API only
-- `"groq"`: forces Groq Whisper + `TextReviewerAgent` (grammar/punctuation correction via `llama-3.1-8b-instant`)
+- `"groq"`: forces Groq Whisper + `TranscriptionReviewAgent` (grammar/punctuation correction via `llama-3.1-8b-instant`)
 
 ### Threading model
 - Audio callback → `Queue` → `root.after()` polling → UI update (RMS VU meter)
@@ -59,7 +59,7 @@ main.py → app.config (validates .env) → MainWindow (CustomTkinter)
 | `app/ui/main_window.py` | CustomTkinter UI, tab management, event queues |
 | `app/ui/vu_meter.py` | LED-style audio level meter |
 | `app/ui/prompt_modal.py` | Prompt/glossary editor |
-| `app/agents/text_reviewer_agent.py` | Groq LLM for grammar correction |
+| `app/agents/transcription_review_agent.py` | Agno + Groq LLM for grammar correction |
 
 ### Knowledge Graph (graphify)
 

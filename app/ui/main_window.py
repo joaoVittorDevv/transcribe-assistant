@@ -136,7 +136,7 @@ class MainWindow(ctk.CTk):
             ],
             command=lambda _: None,
         )
-        self._mode_selector.set(i18n.t("ui.modes.groq"))
+        self._mode_selector.set(i18n.t("ui.modes.google"))
         self._mode_selector.grid(row=0, column=0, sticky="w")
 
         # Right-side status: network + history button

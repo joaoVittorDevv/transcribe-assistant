@@ -5,7 +5,7 @@ Routes audio transcription requests between:
   - Groq Whisper (cloud): uses initial_prompt for glossary injection
 
 When using Groq, transcribed text is automatically reviewed by the Groq
-TextReviewerAgent (``llama-3.1-8b-instant``) for grammar and punctuation
+TranscriptionReviewAgent (``llama-3.1-8b-instant``) for grammar and punctuation
 correction and keyword near-match flagging.
 
 Long audio files (>25 MB or >10 min) are automatically split into chunks
@@ -366,7 +366,7 @@ class Transcriber:
             ) from exc
 
         # --- Review step: grammar / punctuation correction ---
-        print("[DEBUG] Groq: chamando TextReviewerAgent...")
+        print("[DEBUG] Groq: chamando TranscriptionReviewAgent...")
         try:
             from app import database as db
 
@@ -386,9 +386,9 @@ class Transcriber:
             prompt_text_from_db = ""
 
         try:
-            from app.agents import TextReviewerAgent
+            from app.agents import TranscriptionReviewAgent
 
-            reviewer = TextReviewerAgent()
+            reviewer = TranscriptionReviewAgent()
             review_result = reviewer.review(
                 transcribed_text=raw_text,
                 keywords=keywords_from_db,
