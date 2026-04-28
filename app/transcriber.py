@@ -8,13 +8,15 @@ When using Groq, transcribed text is automatically reviewed by the Groq
 TranscriptionReviewAgent (``llama-3.1-8b-instant``) for grammar and punctuation
 correction and keyword near-match flagging.
 
-Long audio files (>25 MB or >10 min) are automatically split into chunks
-via ``app.audio_chunker.split_audio`` and transcribed sequentially.
+Audio files longer than 10 minutes are automatically routed to Google Gemini
+for transcription, regardless of the selected mode — Groq does not accept long
+audio and client-side chunking degrades transcription quality.
 
 Modes:
-  "auto"    — Try Groq + review; fall back to Gemini silently if offline.
+  "auto"    — Try Groq + review; fall back to Gemini silently.
   "gemini"  — Force Gemini only; raises TranscriptionError if offline.
   "groq"    — Force Groq only; raises TranscriptionError if offline.
+             Audio >10 min is automatically redirected to Gemini.
 
 
 Usage:
@@ -90,6 +92,20 @@ class Transcriber:
     # Public API
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _is_long_audio(audio_path: Path, max_duration_sec: float = 600.0) -> bool:
+        """Check if audio file exceeds max_duration_sec (default 10 minutes).
+
+        Returns False if the file cannot be read — lets the backend handle errors.
+        """
+        try:
+            import soundfile as sf
+
+            info = sf.info(str(audio_path))
+            return info.duration > max_duration_sec
+        except Exception:
+            return False
+
     def transcribe(
         self,
         audio_path: Path,
@@ -111,47 +127,46 @@ class Transcriber:
         Raises:
             TranscriptionError: If the selected backend fails and no fallback exists.
         """
+        online = self._is_online_fn()
+        if not online:
+            raise TranscriptionError(
+                "Nenhuma engine disponivel (Offline). Tente novamente quando houver internet."
+            )
+
+        # Áudios com mais de 10 minutos são sempre enviados ao Google Gemini,
+        # independentemente do modo selecionado — o Groq não aceita arquivos
+        # longos e o chunking degrada a qualidade da transcrição.
+        if self._is_long_audio(audio_path):
+            _put_progress(
+                "Áudio longo detectado (>10 min). Enviando diretamente para "
+                "o Google Gemini para transcrição completa..."
+            )
+            print(
+                f"[DEBUG] Transcriber: áudio longo (>10 min), redirecionando "
+                f"para Gemini (modo={mode})"
+            )
+            return self._transcribe_gemini(audio_path, prompt_text, keywords)
+
         if mode == "groq":
-            online = self._is_online_fn()
-            # DEBUG - REMOVE LATER
             print(f"[DEBUG] Transcriber: modo forçado GROQ | is_online={online}")
-            if not online:
-                raise TranscriptionError(
-                    "Modo 'Forçar Groq' selecionado, mas sem conexao com a internet."
-                )
             return self._transcribe_groq(audio_path, keywords, prompt_text)
 
         if mode == "gemini":
-            online = self._is_online_fn()
-            # DEBUG - REMOVE LATER
             print(f"[DEBUG] Transcriber: modo GEMINI | is_online={online}")
-            if not online:
-                raise TranscriptionError(
-                    "Modo 'Forçar Google' selecionado, mas sem conexao com a internet."
-                )
             return self._transcribe_gemini(audio_path, prompt_text, keywords)
 
         # mode == "auto"
-        online = self._is_online_fn()
-        # DEBUG - REMOVE LATER
         print(f"[DEBUG] Transcriber: modo AUTO | is_online={online}")
-        if not online:
-            raise TranscriptionError("Nenhuma engine disponivel (Offline). Tente novamente quando houver internet.")
-        
         try:
-            # DEBUG - REMOVE LATER
             print("[DEBUG] Transcriber: tentando Groq...")
             result = self._transcribe_groq(audio_path, keywords, prompt_text)
-            # DEBUG - REMOVE LATER
             print("[DEBUG] Transcriber: Groq OK")
             return result
         except TranscriptionError as exc:
-            # DEBUG - REMOVE LATER
             print(
                 f"[DEBUG] Transcriber: Groq falhou ({exc}), fazendo fallback para Gemini"
             )
-            
-        # DEBUG - REMOVE LATER
+
         print("[DEBUG] Transcriber: usando Gemini (fallback)")
         return self._transcribe_gemini(audio_path, prompt_text, keywords)
 
@@ -164,49 +179,11 @@ class Transcriber:
     ) -> str:
         """Upload audio to Gemini Files API and request transcription.
 
-        For files longer than 10 minutes, audio is automatically split into
-        chunks and processed sequentially.
+        Gemini handles long audio files natively via its Files API — no
+        client-side chunking needed. The 10+ minute redirect is handled at
+        the ``transcribe()`` routing layer.
         """
-        try:
-            import soundfile as sf
-        except ImportError as exc:
-            raise TranscriptionError(
-                "soundfile nao instalado. Execute: uv add soundfile"
-            ) from exc
-
-        # Check if chunking is needed
-        audio_size_mb = audio_path.stat().st_size / (1024 * 1024)
-        try:
-            info = sf.info(str(audio_path))
-            total_duration = info.duration
-        except Exception as exc:
-            raise TranscriptionError(
-                f"Nao foi possível ler duracao do audio: {exc}"
-            ) from exc
-
-        max_duration_sec = 600.0  # 10 minutes default
-        needs_chunking = total_duration > max_duration_sec
-
-        if not needs_chunking:
-            return self._transcribe_gemini_single(audio_path, prompt_text, keywords)
-
-        # Long file — use chunking
-        texts: list[str] = []
-        try:
-            with split_audio(audio_path, max_duration_sec=max_duration_sec) as chunks:
-                total_chunks = len(chunks)
-                for k, (chunk_path, _chunk_dur) in enumerate(chunks, start=1):
-                    _put_progress(f"Transcribing chunk {k}/{total_chunks}...")
-                    text = self._transcribe_gemini_single(
-                        chunk_path, prompt_text, keywords
-                    )
-                    texts.append(text)
-        except AudioChunkingError as exc:
-            raise TranscriptionError(
-                f"Chunking falhou: {exc}"
-            ) from exc
-
-        return "\n\n".join(texts)
+        return self._transcribe_gemini_single(audio_path, prompt_text, keywords)
 
     def _transcribe_gemini_single(
         self, audio_path: Path, prompt_text: str, keywords: list[str]
@@ -280,11 +257,11 @@ class Transcriber:
     def _transcribe_groq(
         self, audio_path: Path, keywords: list[str], prompt_text: str
     ) -> str:
-        """Transcribe using Groq Whisper with automatic chunking for long audio.
+        """Transcribe using Groq Whisper.
 
-        Files larger than 25 MB or longer than 10 minutes are split into
-        chunks via ``split_audio``, transcribed sequentially, and the results
-        are concatenated with ``\\n\\n``.
+        Only called for files <= 10 minutes (longer audio is redirected to
+        Gemini at the ``transcribe()`` routing layer). Files exceeding 25 MB
+        are split into chunks via ``split_audio`` and transcribed sequentially.
         """
         try:
             import soundfile as sf
