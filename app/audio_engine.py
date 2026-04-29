@@ -89,6 +89,11 @@ def main() -> None:
     global _recorder
     signal.signal(signal.SIGTERM, lambda *_: (_stop(), sys.exit(0)))
 
+    # Bug 1b fix: emit ready signal so main process knows engine is alive
+    ready = {"type": "ready"}
+    sys.stdout.write(json.dumps(ready) + "\n")
+    sys.stdout.flush()
+
     for line in sys.stdin:
         line = line.strip()
         if not line:

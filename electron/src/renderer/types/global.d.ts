@@ -4,7 +4,7 @@ export interface AudioStatus {
 }
 
 export interface ElectronAPI {
-  audioCommand(cmd: { action: string; mode?: string }): void;
+  audioCommand(cmd: { action: string; mode?: string }): Promise<boolean>;
   onRmsUpdate(callback: (value: number) => void): () => void;
   onAudioStatus(callback: (status: AudioStatus) => void): () => void;
   openFilePicker(accept: string[]): Promise<string | null>;

@@ -6,7 +6,7 @@ export interface AudioStatus {
 }
 
 export interface ElectronAPI {
-  audioCommand(cmd: { action: string; mode?: string }): void;
+  audioCommand(cmd: { action: string; mode?: string }): Promise<boolean>;
   onRmsUpdate(callback: (value: number) => void): () => void;
   onAudioStatus(callback: (status: AudioStatus) => void): () => void;
   openFilePicker(accept: string[]): Promise<string | null>;
@@ -18,7 +18,8 @@ export interface ElectronAPI {
 
 const electronAPI: ElectronAPI = {
   audioCommand(cmd) {
-    ipcRenderer.invoke('audio-command', cmd);
+    // Bug 1a fix: return Promise so caller can await the result
+    return ipcRenderer.invoke('audio-command', cmd);
   },
 
   onRmsUpdate(callback) {

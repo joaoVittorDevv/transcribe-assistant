@@ -14,6 +14,8 @@ let cleanupRms: (() => void) | null = null;
 let cleanupStatus: (() => void) | null = null;
 // Captured WAV path returned by audio_engine on stop
 let pendingWavPath: string | null = null;
+// Resolve function for start-recording confirmation (Bug 1a fix)
+let recordingStartResolve: ((value: boolean) => void) | null = null;
 
 let quillCursorIndex = 0;
 
@@ -100,10 +102,32 @@ export function useTranscriptionState() {
 
   async function startRecording() {
     pendingWavPath = null;
-    state.value = 'RECORDING';
     elapsedSeconds.value = 0;
-    timerInterval = setInterval(() => elapsedSeconds.value++, 1000);
+
+    // Bug 1a fix: wait for audio engine to confirm recording started
+    // before setting state to RECORDING. This prevents the user from
+    // speaking before the engine is actually capturing audio.
+    const recordingStarted = new Promise<boolean>((resolve) => {
+      recordingStartResolve = resolve;
+      // Safety timeout: if no confirmation within 5s, abort
+      setTimeout(() => {
+        if (recordingStartResolve) {
+          recordingStartResolve = null;
+          resolve(false);
+        }
+      }, 5000);
+    });
+
     api.audioCommand({ action: 'start', mode: currentMode });
+
+    const started = await recordingStarted;
+    if (!started) {
+      console.error('[transcription] audio engine failed to start recording');
+      return;
+    }
+
+    state.value = 'RECORDING';
+    timerInterval = setInterval(() => elapsedSeconds.value++, 1000);
   }
 
   async function stopAndTranscribe() {
@@ -160,6 +184,11 @@ export function useTranscriptionState() {
   });
 
   cleanupStatus = api.onAudioStatus((status) => {
+    // Bug 1a fix: resolve start-recording promise when engine confirms
+    if (status.recording && recordingStartResolve) {
+      recordingStartResolve(true);
+      recordingStartResolve = null;
+    }
     if (!status.recording && status.wav_path) {
       pendingWavPath = status.wav_path;
     }

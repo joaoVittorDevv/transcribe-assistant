@@ -41,6 +41,43 @@ from app.config import (
 
 TranscriptionMode = Literal["auto", "gemini", "groq"]
 
+# ---------------------------------------------------------------------------
+# Output filter — strips chat-like prefixes/suffixes from LLM responses
+# ---------------------------------------------------------------------------
+import re as _re  # noqa: E402
+
+_CONVERSATIONAL_PREFIXES = [
+    r"^Aqui está (?:a|o) (?:texto )?(?:corrigid[ao]|revisad[ao]|transcri[cç][aã]o)[:]\s*",
+    r"^Segue (?:abaixo )?(?:a|o) (?:texto )?(?:corrigid[ao]|revisad[ao]|transcri[cç][aã]o)[:]\s*",
+    r"^Claro[!,.]?\s*(?:aqui está)?[:]?\s*",
+    r"^Com certeza[!,.]?\s*[:]?\s*",
+    r"^Transcri[cç][aã]o(?: corrigida| revisada)?[:]\s*",
+    r"^Texto (?:corrigido|revisado)[:]\s*",
+    r"^O texto (?:corrigido|revisado) (?:ficou|ficaria|é)[:]\s*",
+    r"^O resultado (?:da revisão|final) (?:é|ficou)[:]\s*",
+    r"^Corre[cç][aã]o[:]\s*",
+    r"^Revis[aã]o[:]\s*",
+    r"^Resposta[:]\s*",
+    r"^Here is the (?:corrected|reviewed) (?:text|transcription)[:]\s*",
+    r"^Sure[!,.]?\s*(?:here(?:'s| you go))?[:]?\s*",
+    r"^Of course[!,.]?\s*[:]?\s*",
+    r"^The (?:corrected|reviewed) (?:text|transcription)(?: is)?[:]\s*",
+]
+
+
+def _filter_transcription_output(text: str) -> str:
+    """Strip conversational prefixes from LLM transcription output.
+
+    Safety net — the system prompt should prevent these, but if the model
+    still responds conversationally, strip it here.
+    """
+    if not text:
+        return text
+    cleaned = text.strip()
+    for pattern in _CONVERSATIONAL_PREFIXES:
+        cleaned = _re.sub(pattern, "", cleaned, count=1, flags=_re.IGNORECASE).strip()
+    return cleaned
+
 GEMINI_SYSTEM_AUDIO_INSTRUCTION = (
     "Voce e um motor de transcricao de audio do sistema. "
     "O audio que voce recebe e a captura do som que esta sendo reproduzido "
@@ -74,7 +111,10 @@ GEMINI_SYSTEM_AUDIO_INSTRUCTION = (
     "(ii) o termo do glossario faz sentido contextual PERFEITO.\n"
     "   c) Se houver qualquer duvida, NAO substitua. Mantenha o que foi ouvido.\n\n"
     "5. PONTUACAO: Adicione pontuacao natural baseada nas pausas "
-    "e entonacao do audio. Nao reformule frases, nao mude ordem de palavras."
+    "e entonacao do audio. Nao reformule frases, nao mude ordem de palavras.\n\n"
+    "6. PROIBIDO: Jamais responda com frases como 'Aqui esta a transcricao', "
+    "'Claro', 'Segue abaixo', ou qualquer texto que nao seja a transcricao. "
+    "A sua unica saida possivel e o texto do audio. Nada mais."
 )
 
 GEMINI_SYSTEM_INSTRUCTION = (
@@ -95,7 +135,10 @@ GEMINI_SYSTEM_INSTRUCTION = (
     "(ii) o termo do glossario faz sentido contextual PERFEITO.\n"
     "   c) Se houver qualquer duvida, NAO substitua. Mantenha o que foi ouvido.\n\n"
     "4. PONTUACAO: Adicione pontuacao natural baseada nas pausas "
-    "e entonacao do audio. Nao reformule frases, nao mude ordem de palavras."
+    "e entonacao do audio. Nao reformule frases, nao mude ordem de palavras.\n\n"
+    "5. PROIBIDO: Jamais responda com frases como 'Aqui esta a transcricao', "
+    "'Claro', 'Segue abaixo', ou qualquer texto que nao seja a transcricao. "
+    "A sua unica saida possivel e o texto do audio. Nada mais."
 )
 
 
@@ -245,7 +288,7 @@ class Transcriber:
         try:
             response_stream = client.models.generate_content_stream(
                 model=GEMINI_MODEL,
-                contents=[uploaded_file, "Transcreva o audio acima com precisao."],
+                contents=[uploaded_file, "Audio transcription:"],
                 config=types.GenerateContentConfig(
                     system_instruction=system_instruction,
                 ),
@@ -259,6 +302,8 @@ class Transcriber:
                         on_chunk(chunk.text)
 
             final_text = "".join(full_text_chunks).strip()
+            # Apply output filter to strip any chat-like artifacts
+            final_text = _filter_transcription_output(final_text)
             print(
                 f"[DEBUG] Gemini: resposta recebida via stream "
                 f"({len(final_text)} chars)"

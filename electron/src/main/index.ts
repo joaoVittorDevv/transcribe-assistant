@@ -35,9 +35,13 @@ function stopServer(): void {
 // ---------------------------------------------------------------------------
 let audioEngine: ChildProcess | null = null;
 let mainWindow: BrowserWindow | null = null;
+// Bug 1b fix: queue pending commands while engine is restarting
+let engineRestarting = false;
+const pendingCommands: Array<{ cmd: { action: string; mode?: string }; resolve: (result: boolean) => void }> = [];
 
 function startAudioEngine(): void {
   if (audioEngine) return;
+  engineRestarting = false;
   audioEngine = spawn('uv', ['run', 'python', 'app/audio_engine.py'], {
     cwd: path.resolve(__dirname, '../../../..'),
     stdio: ['pipe', 'pipe', 'pipe'],
@@ -56,6 +60,20 @@ function startAudioEngine(): void {
           // Forward status events to renderer (includes wav_path on stop)
           mainWindow?.webContents.send('audio-status', msg);
         }
+        if (msg.type === 'ready') {
+          // Bug 1b fix: engine is ready, drain pending command queue
+          console.log('[audio-engine] ready');
+          while (pendingCommands.length > 0) {
+            const pending = pendingCommands.shift()!;
+            try {
+              audioEngine?.stdin?.write(JSON.stringify(pending.cmd) + '\n');
+              pending.resolve(true);
+            } catch (err) {
+              console.error('[audio-engine] failed to send queued command:', err);
+              pending.resolve(false);
+            }
+          }
+        }
       } catch {
         // ignore malformed lines
       }
@@ -73,6 +91,7 @@ function startAudioEngine(): void {
   audioEngine.on('exit', (code) => {
     console.log('[audio-engine] exited with code', code);
     audioEngine = null;
+    engineRestarting = true;
     if (mainWindow && !mainWindow.isDestroyed()) {
       // Restart after 500ms if window still open
       setTimeout(() => {
@@ -100,12 +119,24 @@ function stopAudioEngine(): void {
 // IPC handlers
 // ---------------------------------------------------------------------------
 function setupIpcHandlers(): void {
-  ipcMain.handle('audio-command', (_event, cmd: { action: string; mode?: string }) => {
-    if (!audioEngine || !audioEngine.stdin) return;
+  ipcMain.handle('audio-command', async (_event, cmd: { action: string; mode?: string }) => {
+    // Bug 1b fix: queue command if engine is dead or restarting
+    if (!audioEngine || !audioEngine.stdin) {
+      if (engineRestarting) {
+        console.log('[audio-engine] queuing command while restarting:', cmd.action);
+        return new Promise<boolean>((resolve) => {
+          pendingCommands.push({ cmd, resolve });
+        });
+      }
+      console.error('[audio-engine] engine not running, cannot send command:', cmd.action);
+      return false;
+    }
     try {
       audioEngine.stdin.write(JSON.stringify(cmd) + '\n');
+      return true;
     } catch (err) {
       console.error('[audio-engine] stdin write error:', err);
+      return false;
     }
   });
 
