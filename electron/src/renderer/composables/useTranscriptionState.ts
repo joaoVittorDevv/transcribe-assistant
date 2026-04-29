@@ -1,4 +1,4 @@
-import { ref, onUnmounted } from 'vue';
+import { ref, computed, onUnmounted } from 'vue';
 import { useTabs } from './useTabs';
 import { useDefaultPrompt } from './useDefaultPrompt';
 import type { ElectronAPI } from '../types/global';
@@ -16,6 +16,10 @@ let cleanupStatus: (() => void) | null = null;
 let pendingWavPath: string | null = null;
 // Resolve function for start-recording confirmation (Bug 1a fix)
 let recordingStartResolve: ((value: boolean) => void) | null = null;
+// AbortController for cancelling in-flight transcription fetch
+let abortController: AbortController | null = null;
+// Session ID captured from SSE response headers, used for server-side cancel
+const sessionId = ref<string | null>(null);
 
 let quillCursorIndex = 0;
 
@@ -27,6 +31,9 @@ export function useTranscriptionState() {
   async function transcribeFile(wavPath: string) {
     let accumulated = '';
     quillCursorIndex = 0;
+    // Create new AbortController for this transcription
+    abortController = new AbortController();
+    sessionId.value = null;
     try {
       const arrayBuffer = await api.readFile(wavPath);
       if (!arrayBuffer) throw new Error('Failed to read audio file');
@@ -41,7 +48,12 @@ export function useTranscriptionState() {
       const response = await fetch(`http://localhost:18763/transcribe`, {
         method: 'POST',
         body: formData,
+        signal: abortController.signal,
       });
+
+      // Capture session ID from response headers for server-side cancel
+      const sid = response.headers.get('X-Session-ID');
+      if (sid) sessionId.value = sid;
 
       const reader = response.body?.getReader();
       if (!reader) throw new Error('No response body');
@@ -63,6 +75,7 @@ export function useTranscriptionState() {
           if (dataStr === '[DONE]') {
             state.value = 'IDLE';
             elapsedSeconds.value = 0;
+            sessionId.value = null;
             // Clean up Vault file on successful transcription
             if (wavPath) {
               api.deleteFile(wavPath).catch(() => {});
@@ -73,6 +86,7 @@ export function useTranscriptionState() {
             console.error('[transcription]', dataStr);
             state.value = 'IDLE';
             elapsedSeconds.value = 0;
+            sessionId.value = null;
             return;
           }
           try {
@@ -91,13 +105,20 @@ export function useTranscriptionState() {
         console.error('[transcription] HTTP error:', response.status, response.statusText);
         state.value = 'IDLE';
         elapsedSeconds.value = 0;
+        sessionId.value = null;
         return;
       }
-    } catch (err) {
+    } catch (err: any) {
+      // AbortError is expected when user cancels — not an error
+      if (err?.name === 'AbortError') {
+        console.log('[transcription] fetch aborted by user');
+        return;
+      }
       console.error('[transcription] error:', err);
     }
     state.value = 'IDLE';
     elapsedSeconds.value = 0;
+    sessionId.value = null;
   }
 
   async function startRecording() {
@@ -165,14 +186,31 @@ export function useTranscriptionState() {
   }
 
   function handleCancel() {
-    if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
     if (state.value === 'RECORDING') {
-      api.audioCommand({ action: 'stop' });
+      // Cancel recording: discard audio via 'cancel' action (no WAV saved)
+      if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
+      api.audioCommand({ action: 'cancel' });
+      state.value = 'IDLE';
+      elapsedSeconds.value = 0;
+      rmsValue.value = 0;
+      pendingWavPath = null;
+    } else if (state.value === 'TRANSCRIBING') {
+      // Cancel transcription: abort in-flight fetch + notify server
+      abortController?.abort();
+      if (sessionId.value) {
+        fetch(`http://localhost:18763/transcribe/${sessionId.value}`, {
+          method: 'DELETE',
+        }).catch(() => {});
+      }
+      // Clean up Vault WAV file if we have one
+      if (pendingWavPath) {
+        api.deleteFile(pendingWavPath).catch(() => {});
+        pendingWavPath = null;
+      }
+      state.value = 'IDLE';
+      elapsedSeconds.value = 0;
+      sessionId.value = null;
     }
-    state.value = 'IDLE';
-    elapsedSeconds.value = 0;
-    rmsValue.value = 0;
-    pendingWavPath = null;
   }
 
   function setMode(mode: 'mic' | 'system') {
@@ -196,6 +234,7 @@ export function useTranscriptionState() {
 
   onUnmounted(() => {
     if (timerInterval) clearInterval(timerInterval);
+    abortController?.abort();
     cleanupRms?.();
     cleanupStatus?.();
   });
@@ -205,7 +244,7 @@ export function useTranscriptionState() {
     elapsedSeconds,
     rmsValue,
     currentMode,
-    isShowingCancel: ref(state.value === 'RECORDING' || state.value === 'TRANSCRIBING'),
+    isShowingCancel: computed(() => state.value === 'RECORDING' || state.value === 'TRANSCRIBING'),
     handleRecordClick,
     handleCancel,
     setMode,

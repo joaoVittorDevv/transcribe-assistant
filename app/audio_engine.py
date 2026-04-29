@@ -9,6 +9,7 @@ Commands (stdin):
     {"action": "start", "mode": "mic"}
     {"action": "start", "mode": "system"}
     {"action": "stop"}
+    {"action": "cancel"}
 """
 from __future__ import annotations
 
@@ -68,6 +69,22 @@ def _stop() -> Path | None:
     return wav_path
 
 
+def _cancel() -> None:
+    """Stop recording and discard all audio — no WAV file is saved."""
+    global _active
+    if _recorder is None:
+        return
+    _recorder.discard_recording()
+    _active = False
+    status = {
+        "type": "status",
+        "recording": False,
+        "wav_path": None,
+    }
+    sys.stdout.write(json.dumps(status) + "\n")
+    sys.stdout.flush()
+
+
 # ---------------------------------------------------------------------------
 # Command loop
 # ---------------------------------------------------------------------------
@@ -79,6 +96,8 @@ def _handle_command(cmd: dict) -> None:
         _start(mode)
     elif action == "stop":
         _stop()
+    elif action == "cancel":
+        _cancel()
     else:
         err = {"type": "error", "message": f"Unknown action: {action}"}
         sys.stdout.write(json.dumps(err) + "\n")

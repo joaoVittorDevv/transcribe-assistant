@@ -234,6 +234,45 @@ class AudioRecorder:
             # No native monitor found - will use parec fallback
         return None
 
+    def discard_recording(self) -> None:
+        """Stop recording and discard all captured audio. No WAV is saved.
+
+        Unlike stop_recording(), this does NOT write any file to disk.
+        Use this when the user cancels a recording.
+        """
+        if not self._recording:
+            return
+
+        self._recording = False
+
+        # Stop sounddevice stream if active
+        if self._stream:
+            self._stream.stop()
+            self._stream.close()
+            self._stream = None
+
+        # Stop parec process if active
+        if self._parec_process:
+            self._parec_process.terminate()
+            try:
+                self._parec_process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                self._parec_process.kill()
+            self._parec_process = None
+
+        if self._parec_thread:
+            self._parec_thread.join(timeout=2)
+            self._parec_thread = None
+
+        # Clear frames without saving
+        with self._lock:
+            self._frames = []
+
+        # Reset meter to silence
+        self._current_rms = 0.0
+        if self._on_rms_update:
+            self._on_rms_update(0.0)
+
     def stop_recording(self, save_dir: Path | None = None) -> Path:
         """Stop capture and save audio to a WAV file.
 
