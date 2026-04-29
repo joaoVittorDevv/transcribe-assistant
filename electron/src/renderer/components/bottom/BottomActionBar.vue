@@ -6,10 +6,15 @@
     <!-- Center-left: Visualizer -->
     <AudioVisualizer :is-active="transcriptionState === 'RECORDING'" />
 
-    <!-- Center: Record button -->
-    <div class="flex-1 flex items-center justify-center gap-3">
-      <RecordButton :state="transcriptionState" @click="handleRecordClick" @mode-change="handleModeChange" />
-      <CancelButton :visible="isShowingCancel" @click="handleCancel" />
+    <!-- Center: Record button (always centered) -->
+    <div class="flex-1 flex items-center justify-center">
+      <RecordButton
+        :state="transcriptionState"
+        :cancel-visible="isShowingCancel"
+        @click="handleRecordClick"
+        @cancel="handleCancel"
+        @mode-change="handleModeChange"
+      />
     </div>
 
     <!-- Right: Copy + Reset -->
@@ -34,7 +39,6 @@
 import Timer from './Timer.vue';
 import AudioVisualizer from './AudioVisualizer.vue';
 import RecordButton from './RecordButton.vue';
-import CancelButton from './CancelButton.vue';
 import { useTranscriptionState } from '../../composables/useTranscriptionState';
 import { useTabs } from '../../composables/useTabs';
 import { useEditor } from '../../composables/useEditor';
