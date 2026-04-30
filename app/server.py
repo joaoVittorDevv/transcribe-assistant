@@ -128,6 +128,12 @@ async def _transcription_events(
 
     def chunk_callback(chunk_text: str) -> None:
         """Called from the background transcription thread — push to async queue."""
+        # Log chunk reception for ordering debugging
+        preview = chunk_text[:40].replace('\n', '\\n')
+        logger.debug(
+            "[CHUNK-IN] len=%d preview='%s'",
+            len(chunk_text), preview,
+        )
         running_loop.call_soon_threadsafe(queue.put_nowait, chunk_text)
 
     def run_transcribe():
@@ -157,12 +163,16 @@ async def _transcription_events(
 
     word_buffer = ""
     accumulated = ""
+    chunks_received = 0
+    chunks_emitted = 0
 
     try:
         while True:
             item = await queue.get()
             if item is None:
                 break
+
+            chunks_received += 1
 
             # Check for error marker before word-boundary processing
             if isinstance(item, str) and item.startswith("[ERROR]"):
@@ -180,12 +190,18 @@ async def _transcription_events(
             emit_text, word_buffer = _extract_word_chunks(word_buffer)
 
             if emit_text:
+                chunks_emitted += 1
                 accumulated += emit_text
                 with _session_lock:
                     if session_id in _active_sessions:
                         _active_sessions[session_id]["accumulated_text"] = accumulated
                 yield _sse_frame("chunk", emit_text)
-                logger.debug("chunk: %s", emit_text[:50])
+                logger.debug(
+                    "[CHUNK-OUT] #%d len=%d preview='%s'",
+                    chunks_emitted,
+                    len(emit_text),
+                    emit_text[:50],
+                )
 
         # Flush any remaining incomplete word at the end
         if word_buffer:
@@ -194,7 +210,14 @@ async def _transcription_events(
                 if session_id in _active_sessions:
                     _active_sessions[session_id]["accumulated_text"] = accumulated
             yield _sse_frame("chunk", word_buffer)
+            chunks_emitted += 1
             logger.debug("chunk (flush): %s", word_buffer[:50])
+
+        # Summary log for debugging
+        logger.info(
+            "[TRANSCRIPTION-DONE] session=%s received=%d emitted=%d total_chars=%d",
+            session_id, chunks_received, chunks_emitted, len(accumulated),
+        )
     except asyncio.CancelledError:
         logger.info("SSE stream cancelled for session %s", session_id)
         with _session_lock:

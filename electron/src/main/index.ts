@@ -159,9 +159,10 @@ function setupIpcHandlers(): void {
     }
   });
 
-  ipcMain.handle('insert-text-at-cursor', (_event, text: string) => {
+  // Use ipcMain.on (fire-and-forget) instead of handle to reduce latency
+  // for text insertion. No response needed — just forward to renderer.
+  ipcMain.on('insert-text-at-cursor', (_event, text: string) => {
     mainWindow?.webContents.send('insert-text', text);
-    return true;
   });
 
   ipcMain.handle('delete-file', async (_event, filePath: string) => {

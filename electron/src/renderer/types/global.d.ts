@@ -10,7 +10,7 @@ export interface ElectronAPI {
   openFilePicker(accept: string[]): Promise<string | null>;
   readFile(path: string): Promise<ArrayBuffer | null>;
   deleteFile(path: string): Promise<boolean>;
-  insertTextAtCursor(text: string): void;
+  insertTextAtCursor(text: string): Promise<boolean>;
   onInsertText(callback: (text: string) => void): () => void;
 }
 

@@ -12,7 +12,7 @@ export interface ElectronAPI {
   openFilePicker(accept: string[]): Promise<string | null>;
   readFile(path: string): Promise<ArrayBuffer | null>;
   deleteFile(path: string): Promise<boolean>;
-  insertTextAtCursor(text: string): void;
+  insertTextAtCursor(text: string): Promise<boolean>;
   onInsertText(callback: (text: string) => void): () => void;
 }
 
@@ -49,8 +49,11 @@ const electronAPI: ElectronAPI = {
     return ipcRenderer.invoke('delete-file', filePath);
   },
 
-  insertTextAtCursor(text: string) {
-    ipcRenderer.invoke('insert-text-at-cursor', text);
+  insertTextAtCursor(text: string): Promise<boolean> {
+    // Use send (fire-and-forget) instead of invoke to avoid unnecessary
+    // round-trip latency. The main process just forwards to renderer.
+    ipcRenderer.send('insert-text-at-cursor', text);
+    return Promise.resolve(true);
   },
 
   onInsertText(callback) {

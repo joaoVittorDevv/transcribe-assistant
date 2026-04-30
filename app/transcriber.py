@@ -293,9 +293,17 @@ class Transcriber:
             )
 
             full_text_chunks = []
+            chunk_count = 0
             for chunk in response_stream:
                 if chunk and hasattr(chunk, "text") and chunk.text:
+                    chunk_count += 1
                     full_text_chunks.append(chunk.text)
+                    # Log chunk details for debugging ordering issues
+                    preview = chunk.text[:60].replace('\n', '\\n')
+                    print(
+                        f"[DEBUG] Gemini chunk #{chunk_count}: "
+                        f"len={len(chunk.text)} preview='{preview}'"
+                    )
                     if on_chunk:
                         on_chunk(chunk.text)
 
@@ -303,7 +311,8 @@ class Transcriber:
             # Apply output filter to strip any chat-like artifacts
             final_text = _filter_transcription_output(final_text)
             print(
-                f"[DEBUG] Gemini: transcricao concluida ({len(final_text)} chars)"
+                f"[DEBUG] Gemini: transcricao concluida "
+                f"({len(final_text)} chars, {chunk_count} chunks)"
             )
             print(f"[INFO] Gemini: provedor finalizado com sucesso")
             return final_text

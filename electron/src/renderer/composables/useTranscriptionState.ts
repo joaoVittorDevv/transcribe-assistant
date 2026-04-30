@@ -83,6 +83,7 @@ export function useTranscriptionState() {
 
       const decoder = new TextDecoder();
       let buffer = '';
+      let chunksReceived = 0;
 
       while (true) {
         const { done, value } = await reader.read();
@@ -96,6 +97,7 @@ export function useTranscriptionState() {
           let dataStr = line.slice(5);
           if (dataStr.startsWith(' ')) dataStr = dataStr.slice(1);
           if (dataStr === '[DONE]') {
+            console.log('[Transcription] completed —', chunksReceived, 'chunks received');
             state.value = 'IDLE';
             elapsedSeconds.value = 0;
             sessionId.value = null;
@@ -112,15 +114,10 @@ export function useTranscriptionState() {
             sessionId.value = null;
             return;
           }
-          try {
-            const parsed = JSON.parse(dataStr);
-            const text = typeof parsed === 'string' ? parsed : parsed.text ?? '';
-            // Backend sends complete words with trailing whitespace (word-boundary buffering)
-            api.insertTextAtCursor(text);
-          } catch {
-            // Server sends raw text chunks not wrapped in JSON — insert directly
-            api.insertTextAtCursor(dataStr);
-          }
+          // Server sends raw text chunks (not JSON) — insert directly
+          chunksReceived++;
+          console.debug('[Transcription] chunk #' + chunksReceived + ':', dataStr.length, 'chars');
+          await api.insertTextAtCursor(dataStr);
         }
       }
 
