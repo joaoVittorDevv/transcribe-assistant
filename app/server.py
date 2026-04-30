@@ -132,6 +132,7 @@ async def _transcription_events(
 
     def run_transcribe():
         """Execute on a background thread so the event loop is never blocked."""
+        print(f"[SERVER] Iniciando transcricao | mode={mode} | source={source}")
         t = transcriber.Transcriber(is_online_fn=lambda: _net_mon.is_online)
         try:
             t.transcribe(
@@ -274,6 +275,7 @@ async def transcribe(
 
     If session_id is provided and exists, resume that session (D-08).
     """
+    print(f"[SERVER] POST /transcribe recebido | mode={mode} | source={source}")
     # Read in chunks to enforce 100MB limit without loading full file into RAM
     MAX_SIZE = 100 * 1024 * 1024
     audio_bytes = b""

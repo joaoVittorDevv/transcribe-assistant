@@ -220,29 +220,26 @@ class Transcriber:
                 "Tente novamente quando houver internet."
             )
 
+        print(f"[INFO] Transcriber: solicitacao recebida | modo={mode} | source={source} | online={online}")
+
         if mode == "groq":
-            print(f"[DEBUG] Transcriber: modo forçado GROQ | is_online={online}")
+            print(f"[INFO] PROVEDOR SELECIONADO: Groq Whisper | source={source}")
             return self._transcribe_groq(audio_path, keywords, prompt_text, on_chunk)
 
         if mode == "gemini":
-            print(f"[DEBUG] Transcriber: modo GEMINI | is_online={online}")
+            print(f"[INFO] PROVEDOR SELECIONADO: Google Gemini | source={source}")
             return self._transcribe_gemini(audio_path, prompt_text, keywords, on_chunk, source)
 
-        # mode == "auto"
-        print(f"[DEBUG] Transcriber: modo AUTO | is_online={online}")
+        # mode == "auto" — Google é o provedor padrao, Groq é fallback
+        print(f"[INFO] MODO AUTO: usando Google Gemini como padrao...")
         try:
-            print("[DEBUG] Transcriber: tentando Groq...")
-            result = self._transcribe_groq(audio_path, keywords, prompt_text, on_chunk)
-            print("[DEBUG] Transcriber: Groq OK")
-            return result
+            print(f"[INFO] PROVEDOR CHAMADO: Google Gemini | source={source}")
+            return self._transcribe_gemini(audio_path, prompt_text, keywords, on_chunk, source)
         except TranscriptionError as exc:
-            print(
-                f"[DEBUG] Transcriber: Groq falhou ({exc}), "
-                f"fazendo fallback para Gemini"
-            )
+            print(f"[WARN] Google Gemini falhou ({exc}), fallback para Groq Whisper")
 
-        print("[DEBUG] Transcriber: usando Gemini (fallback)")
-        return self._transcribe_gemini(audio_path, prompt_text, keywords, on_chunk, source)
+        print(f"[INFO] PROVEDOR CHAMADO: Groq Whisper (fallback) | source={source}")
+        return self._transcribe_groq(audio_path, keywords, prompt_text, on_chunk)
 
     # ------------------------------------------------------------------
     # Gemini backend
@@ -277,6 +274,7 @@ class Transcriber:
         system_instruction = self._build_system_instruction(prompt_text, keywords, source)
 
         # Upload the audio file to Files API (SDK >= 1.0 uses file=, not path=)
+        print(f"[DEBUG] Gemini: iniciando upload do arquivo {audio_path.name}")
         try:
             uploaded_file = client.files.upload(file=str(audio_path))
             print(f"[DEBUG] Gemini: upload concluido -> {uploaded_file.name}")
@@ -305,9 +303,9 @@ class Transcriber:
             # Apply output filter to strip any chat-like artifacts
             final_text = _filter_transcription_output(final_text)
             print(
-                f"[DEBUG] Gemini: resposta recebida via stream "
-                f"({len(final_text)} chars)"
+                f"[DEBUG] Gemini: transcricao concluida ({len(final_text)} chars)"
             )
+            print(f"[INFO] Gemini: provedor finalizado com sucesso")
             return final_text
 
         except Exception as exc:
@@ -389,6 +387,7 @@ class Transcriber:
         prompt_text: str,
     ) -> str:
         """Transcribe a single audio file with Groq Whisper (no chunking)."""
+        print(f"[DEBUG] Groq: iniciando transcricao de {audio_path.name}")
         try:
             from groq import Groq
         except ImportError as exc:
@@ -397,6 +396,8 @@ class Transcriber:
             ) from exc
 
         # Validate size for single chunk (should already be ≤25MB from routing)
+        file_size_mb = audio_path.stat().st_size / (1024 * 1024)
+        print(f"[DEBUG] Groq: tamanho do arquivo: {file_size_mb:.2f} MB")
         if audio_path.stat().st_size > 25 * 1024 * 1024:
             raise TranscriptionError(
                 "Chunk muito grande para a API do Groq (> 25MB)."
@@ -406,6 +407,7 @@ class Transcriber:
         initial_prompt = ", ".join(keywords) if keywords else ""
 
         try:
+            print(f"[DEBUG] Groq: chamando API Whisper-large-v3-turbo...")
             with open(audio_path, "rb") as file:
                 transcription = client.audio.transcriptions.create(
                     file=file,
@@ -416,6 +418,7 @@ class Transcriber:
                     temperature=0.0,
                 )
             raw_text = str(transcription).strip()
+            print(f"[DEBUG] Groq: transcricao bruta obtida ({len(raw_text)} chars)")
         except Exception as exc:
             raise TranscriptionError(
                 f"Erro na transcricao com Groq: {exc}"
@@ -443,12 +446,14 @@ class Transcriber:
                     + "\n".join(review_result.diff_lines)
                 )
 
+            print(f"[INFO] Groq: provedor finalizado com sucesso ({len(review_result.corrected_text)} chars)")
             return review_result.corrected_text
         except Exception as exc:
             # Graceful degradation: if review fails, return raw transcription
             print(
                 f"[DEBUG] Groq review failed ({exc}), usando texto bruto."
             )
+            print(f"[INFO] Groq: provedor finalizado com sucesso (sem revisao, {len(raw_text)} chars)")
             return raw_text
 
     # ------------------------------------------------------------------

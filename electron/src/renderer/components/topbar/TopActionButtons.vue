@@ -43,6 +43,9 @@ async function importAudio() {
   form.append('audio', blob, filePath.split('/').pop() ?? 'audio');
   form.append('prompt_text', promptData.value.texto_prompt);
   form.append('keywords', promptData.value.keywords.join(', '));
+  // Imported files always use Google Gemini (like system audio)
+  form.append('mode', 'gemini');
+  form.append('source', 'import');
 
   const res = await fetch('http://localhost:18763/transcribe', {
     method: 'POST',

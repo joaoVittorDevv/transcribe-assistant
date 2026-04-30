@@ -1,6 +1,7 @@
 import { ref, computed, onUnmounted } from 'vue';
 import { useTabs } from './useTabs';
 import { useDefaultPrompt } from './useDefaultPrompt';
+import { useProvider } from './useProvider';
 import type { ElectronAPI } from '../types/global';
 
 export type TranscriptionState = 'IDLE' | 'RECORDING' | 'TRANSCRIBING';
@@ -27,6 +28,7 @@ export function useTranscriptionState() {
   const { activeTabId, updateContent } = useTabs();
   const api = window.electronAPI as ElectronAPI;
   const { promptData } = useDefaultPrompt();
+  const { selectedProvider } = useProvider();
 
   async function transcribeFile(wavPath: string) {
     let accumulated = '';
@@ -42,7 +44,28 @@ export function useTranscriptionState() {
       formData.append('audio', new Blob([arrayBuffer], { type: 'audio/wav' }), 'audio.wav');
       formData.append('prompt_text', promptData.value.texto_prompt);
       formData.append('keywords', promptData.value.keywords.join(', '));
-      formData.append('mode', currentMode === 'system' ? 'gemini' : 'auto');
+      // Determine transcription mode based on audio source and provider selection
+      let transcriptionMode: string;
+      if (currentMode === 'system') {
+        // System audio always uses Google Gemini
+        transcriptionMode = 'gemini';
+      } else {
+        // Mic audio respects user provider selection
+        switch (selectedProvider.value) {
+          case 'google':
+            transcriptionMode = 'gemini';
+            break;
+          case 'groq':
+            transcriptionMode = 'groq';
+            break;
+          case 'auto':
+          default:
+            transcriptionMode = 'auto';
+            break;
+        }
+      }
+      console.log('[Transcription] mode:', transcriptionMode, '| source:', currentMode, '| provider:', selectedProvider.value);
+      formData.append('mode', transcriptionMode);
       formData.append('source', currentMode);
 
       const response = await fetch(`http://localhost:18763/transcribe`, {
