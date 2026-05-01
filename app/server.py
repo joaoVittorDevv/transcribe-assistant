@@ -117,11 +117,12 @@ async def _transcription_events(
 ):
     """Async generator that wraps blocking transcriber.transcribe() via a background thread.
 
-    Yields SSE frames on the "chunk" event.
+    Yields SSE frames on the "chunk" and "status" events.
     On completion yields: data: [DONE]
     On error yields:     data: [ERROR] <message>
     """
-    queue: asyncio.Queue[str | None] = asyncio.Queue()
+    # Queue items: ("CHUNK", text) | ("STATUS", payload_dict) | None (sentinel)
+    queue: asyncio.Queue[tuple[str, str | dict] | None] = asyncio.Queue()
 
     # Capture the running loop before entering the background thread
     running_loop = asyncio.get_running_loop()
@@ -134,11 +135,17 @@ async def _transcription_events(
             "[CHUNK-IN] len=%d preview='%s'",
             len(chunk_text), preview,
         )
-        running_loop.call_soon_threadsafe(queue.put_nowait, chunk_text)
+        running_loop.call_soon_threadsafe(queue.put_nowait, ("CHUNK", chunk_text))
+
+    def status_callback(payload: dict) -> None:
+        """Called from the background transcription thread — push status event."""
+        logger.debug("[STATUS-IN] phase=%s", payload.get("phase"))
+        running_loop.call_soon_threadsafe(queue.put_nowait, ("STATUS", payload))
 
     def run_transcribe():
         """Execute on a background thread so the event loop is never blocked."""
         print(f"[SERVER] Iniciando transcricao | mode={mode} | source={source}")
+        status_callback({"phase": "processing", "message": "Enviando para transcrição..."})
         t = transcriber.Transcriber(is_online_fn=lambda: _net_mon.is_online)
         try:
             t.transcribe(
@@ -148,10 +155,12 @@ async def _transcription_events(
                 mode=mode,  # type: ignore[arg-type]
                 on_chunk=chunk_callback,
                 source=source,
+                on_status=status_callback,
             )
         except Exception as exc:
             logger.error("Transcription error: %s", exc)
-            running_loop.call_soon_threadsafe(queue.put_nowait, f"[ERROR] {exc}")
+            status_callback({"phase": "error", "message": f"Erro: {exc}"})
+            running_loop.call_soon_threadsafe(queue.put_nowait, ("CHUNK", f"[ERROR] {exc}"))
         finally:
             running_loop.call_soon_threadsafe(queue.put_nowait, None)
 
@@ -172,18 +181,28 @@ async def _transcription_events(
             if item is None:
                 break
 
+            event_type, payload = item
+
+            # --- Status events: emit immediately ---
+            if event_type == "STATUS":
+                import json as _json
+                yield _sse_frame("status", _json.dumps(payload, ensure_ascii=False))
+                continue
+
+            # --- Chunk events: word-boundary buffering ---
+            chunk_text = payload  # payload is str for CHUNK
             chunks_received += 1
 
             # Check for error marker before word-boundary processing
-            if isinstance(item, str) and item.startswith("[ERROR]"):
+            if isinstance(chunk_text, str) and chunk_text.startswith("[ERROR]"):
                 with _session_lock:
                     if session_id in _active_sessions:
                         _active_sessions[session_id]["status"] = "error"
-                yield _sse_frame("chunk", item)
+                yield _sse_frame("chunk", chunk_text)
                 break
 
             # Append to word buffer
-            word_buffer += item
+            word_buffer += chunk_text
 
             # Extract and emit only complete words (word + trailing whitespace)
             # Incomplete words at the end stay in word_buffer
@@ -252,6 +271,7 @@ async def _transcription_events(
         if session_id in _active_sessions:
             _active_sessions[session_id]["status"] = "done"
     logger.info("transcription DONE for session %s", session_id)
+    yield _sse_frame("status", '{"phase":"done","message":"Transcrição concluída!"}')
     yield _sse_frame("chunk", "[DONE]")
 
 
@@ -327,8 +347,16 @@ async def transcribe(
 
     logger.info("Starting transcription session=%s mode=%s", sid, mode)
 
+    # Wrapper generator that emits initial status events before the main stream
+    async def _stream_with_status():
+        import json as _json
+        yield _sse_frame("status", _json.dumps({"phase": "received", "message": "Áudio recebido, preparando..."}, ensure_ascii=False))
+        yield _sse_frame("status", _json.dumps({"phase": "saved", "message": "Arquivo salvo, iniciando processamento..."}, ensure_ascii=False))
+        async for frame in _transcription_events(sid, temp_path, prompt_text, keywords_list, mode, source):
+            yield frame
+
     return StreamingResponse(
-        _transcription_events(sid, temp_path, prompt_text, keywords_list, mode, source),
+        _stream_with_status(),
         media_type="text/event-stream",
         headers={
             "X-Session-ID": sid,

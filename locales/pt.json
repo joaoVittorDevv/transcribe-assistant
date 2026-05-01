@@ -43,7 +43,16 @@
         "validating_audio": "Validando áudio...",
         "audio_rejected": "Áudio rejeitado: %{reason}",
         "audio_accepted": "Áudio aceito — transcrevendo...",
-        "import_error": "Erro ao importar: %{message}"
+        "import_error": "Erro ao importar: %{message}",
+        "receiving_audio": "Áudio recebido, preparando...",
+        "saving_file": "Arquivo salvo, iniciando processamento...",
+        "processing_start": "Enviando para transcrição...",
+        "uploading_gemini": "Enviando áudio para Google Gemini...",
+        "gemini_processing": "Gemini processando áudio...",
+        "streaming_start": "Recebendo transcrição...",
+        "sending_groq": "Enviando para Groq Whisper...",
+        "reviewing_text": "Revisando gramática e pontuação...",
+        "transcription_complete": "Transcrição concluída!"
       },
       "sidebar": {
         "title": "Prompt Ativo",

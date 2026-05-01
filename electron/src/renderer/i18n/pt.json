@@ -35,5 +35,14 @@
   "find.replace": "Substituir",
   "find.replace_all": "Substituir tudo",
   "find.no_results": "Nenhum resultado",
-  "find.close": "Fechar"
+  "find.close": "Fechar",
+  "progress.step.received": "Recebido",
+  "progress.step.saved": "Salvo",
+  "progress.step.processing": "Processando",
+  "progress.step.uploading": "Enviando",
+  "progress.step.transcribing": "Transcrevendo",
+  "progress.step.streaming": "Streaming",
+  "progress.step.reviewing": "Revisando",
+  "progress.step.done": "Pronto",
+  "progress.default_message": "Preparando transcrição..."
 }

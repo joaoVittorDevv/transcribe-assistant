@@ -1,11 +1,7 @@
-export {};
+/// <reference types="vite/client" />
 
-declare global {
-  interface Window {
-    electronAPI: {
-      audioCommand(cmd: { action: string; mode?: string }): Promise<boolean>;
-      onRmsUpdate(callback: (value: number) => void): () => void;
-      openFilePicker(accept: string[]): Promise<string | null>;
-    };
-  }
+declare module '*.vue' {
+  import type { DefineComponent } from 'vue';
+  const component: DefineComponent<Record<string, unknown>, Record<string, unknown>, unknown>;
+  export default component;
 }

@@ -2,6 +2,7 @@ import { ref, computed, onUnmounted } from 'vue';
 import { useTabs } from './useTabs';
 import { useDefaultPrompt } from './useDefaultPrompt';
 import { useProvider } from './useProvider';
+import { useTranscriptionProgress, PROGRESS_STEPS, type ProgressPhase } from './useTranscriptionProgress';
 import type { ElectronAPI } from '../types/global';
 
 export type TranscriptionState = 'IDLE' | 'RECORDING' | 'TRANSCRIBING';
@@ -84,6 +85,8 @@ export function useTranscriptionState() {
       const decoder = new TextDecoder();
       let buffer = '';
       let chunksReceived = 0;
+      let pendingStatusEvent = false;
+      const { setPhase, reset: resetProgress } = useTranscriptionProgress();
 
       while (true) {
         const { done, value } = await reader.read();
@@ -92,12 +95,42 @@ export function useTranscriptionState() {
         const lines = buffer.split('\n');
         buffer = lines.pop() ?? '';
         for (const line of lines) {
+          // Detect SSE event type for status messages
+          if (line.startsWith('event:') && line.includes('status')) {
+            pendingStatusEvent = true;
+            continue;
+          }
           if (!line.startsWith('data:')) continue;
           // Extract payload preserving trailing whitespace (backend controls word spacing)
           let dataStr = line.slice(5);
           if (dataStr.startsWith(' ')) dataStr = dataStr.slice(1);
+          // Handle status events: parse JSON and dispatch to progress composable
+          if (pendingStatusEvent) {
+            pendingStatusEvent = false;
+            try {
+              const statusPayload = JSON.parse(dataStr);
+              const phase = statusPayload.phase as ProgressPhase;
+              const message = statusPayload.message as string | undefined;
+              // Only dispatch known phases to avoid progress glitches
+              const knownPhases = new Set(PROGRESS_STEPS.map((s) => s.id));
+              if (phase && knownPhases.has(phase)) {
+                setPhase(phase, message);
+                console.debug('[Transcription] status:', phase, message ?? '');
+              } else if (phase) {
+                console.debug('[Transcription] ignoring unknown phase:', phase);
+              }
+            } catch (e) {
+              console.warn('[Transcription] failed to parse status event:', dataStr);
+            }
+            continue;
+          }
           if (dataStr === '[DONE]') {
             console.log('[Transcription] completed —', chunksReceived, 'chunks received');
+            setPhase('done');
+            // Brief delay to show done state before resetting
+            setTimeout(() => {
+              resetProgress();
+            }, 1500);
             state.value = 'IDLE';
             elapsedSeconds.value = 0;
             sessionId.value = null;
@@ -109,6 +142,7 @@ export function useTranscriptionState() {
           }
           if (dataStr.startsWith('[ERROR]')) {
             console.error('[transcription]', dataStr);
+            resetProgress();
             state.value = 'IDLE';
             elapsedSeconds.value = 0;
             sessionId.value = null;
@@ -206,6 +240,7 @@ export function useTranscriptionState() {
   }
 
   function handleCancel() {
+    const { reset: resetProgress } = useTranscriptionProgress();
     if (state.value === 'RECORDING') {
       // Cancel recording: discard audio via 'cancel' action (no WAV saved)
       if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
@@ -214,6 +249,7 @@ export function useTranscriptionState() {
       elapsedSeconds.value = 0;
       rmsValue.value = 0;
       pendingWavPath = null;
+      resetProgress();
     } else if (state.value === 'TRANSCRIBING') {
       // Cancel transcription: abort in-flight fetch + notify server
       abortController?.abort();
@@ -230,6 +266,7 @@ export function useTranscriptionState() {
       state.value = 'IDLE';
       elapsedSeconds.value = 0;
       sessionId.value = null;
+      resetProgress();
     }
   }
 

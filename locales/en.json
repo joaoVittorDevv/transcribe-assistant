@@ -43,7 +43,16 @@
                 "validating_audio": "Validating audio...",
                 "audio_rejected": "Audio rejected: %{reason}",
                 "audio_accepted": "Audio accepted — transcribing...",
-                "import_error": "Import error: %{message}"
+                "import_error": "Import error: %{message}",
+                "receiving_audio": "Audio received, preparing...",
+                "saving_file": "File saved, starting processing...",
+                "processing_start": "Sending for transcription...",
+                "uploading_gemini": "Sending audio to Google Gemini...",
+                "gemini_processing": "Gemini processing audio...",
+                "streaming_start": "Receiving transcription...",
+                "sending_groq": "Sending to Groq Whisper...",
+                "reviewing_text": "Reviewing grammar and punctuation...",
+                "transcription_complete": "Transcription complete!"
             },
             "sidebar": {
                 "title": "Active Prompt",

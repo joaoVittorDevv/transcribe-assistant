@@ -1,4 +1,9 @@
 <template>
+  <!-- Transcription progress indicator -->
+  <Transition name="progress-slide">
+    <TranscriptionProgress v-if="transcriptionState === 'TRANSCRIBING'" />
+  </Transition>
+
   <div class="flex items-center gap-3 px-4 py-3 border-t border-white/10">
     <!-- Left: Timer -->
     <Timer :seconds="elapsedSeconds" />
@@ -39,6 +44,7 @@
 import Timer from './Timer.vue';
 import AudioVisualizer from './AudioVisualizer.vue';
 import RecordButton from './RecordButton.vue';
+import TranscriptionProgress from './TranscriptionProgress.vue';
 import { useTranscriptionState } from '../../composables/useTranscriptionState';
 import { useTabs } from '../../composables/useTabs';
 import { useEditor } from '../../composables/useEditor';
@@ -64,3 +70,32 @@ function handleModeChange(mode: 'mic' | 'system') {
   setMode(mode);
 }
 </script>
+
+<style scoped>
+.progress-slide-enter-active {
+  transition: all 0.3s ease-out;
+}
+.progress-slide-leave-active {
+  transition: all 0.2s ease-in;
+}
+.progress-slide-enter-from {
+  opacity: 0;
+  transform: translateY(-10px);
+  max-height: 0;
+}
+.progress-slide-enter-to {
+  opacity: 1;
+  transform: translateY(0);
+  max-height: 120px;
+}
+.progress-slide-leave-from {
+  opacity: 1;
+  transform: translateY(0);
+  max-height: 120px;
+}
+.progress-slide-leave-to {
+  opacity: 0;
+  transform: translateY(-10px);
+  max-height: 0;
+}
+</style>

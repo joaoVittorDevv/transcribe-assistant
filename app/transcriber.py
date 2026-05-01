@@ -183,6 +183,7 @@ class Transcriber:
         mode: TranscriptionMode = "auto",
         on_chunk: callable = None,
         source: str = "mic",
+        on_status: callable = None,
     ) -> str:
         """Transcribe an audio file and return the resulting text.
 
@@ -211,7 +212,7 @@ class Transcriber:
                 on_chunk(
                     "\n--- Transcrição via Google Gemini (áudio longo) ---\n\n"
                 )
-            return self._transcribe_gemini(audio_path, prompt_text, keywords, on_chunk, source)
+            return self._transcribe_gemini(audio_path, prompt_text, keywords, on_chunk, source, on_status=on_status)
 
         online = self._is_online_fn()
         if not online:
@@ -224,22 +225,22 @@ class Transcriber:
 
         if mode == "groq":
             print(f"[INFO] PROVEDOR SELECIONADO: Groq Whisper | source={source}")
-            return self._transcribe_groq(audio_path, keywords, prompt_text, on_chunk)
+            return self._transcribe_groq(audio_path, keywords, prompt_text, on_chunk, on_status=on_status)
 
         if mode == "gemini":
             print(f"[INFO] PROVEDOR SELECIONADO: Google Gemini | source={source}")
-            return self._transcribe_gemini(audio_path, prompt_text, keywords, on_chunk, source)
+            return self._transcribe_gemini(audio_path, prompt_text, keywords, on_chunk, source, on_status=on_status)
 
         # mode == "auto" — Google é o provedor padrao, Groq é fallback
         print(f"[INFO] MODO AUTO: usando Google Gemini como padrao...")
         try:
             print(f"[INFO] PROVEDOR CHAMADO: Google Gemini | source={source}")
-            return self._transcribe_gemini(audio_path, prompt_text, keywords, on_chunk, source)
+            return self._transcribe_gemini(audio_path, prompt_text, keywords, on_chunk, source, on_status=on_status)
         except TranscriptionError as exc:
             print(f"[WARN] Google Gemini falhou ({exc}), fallback para Groq Whisper")
 
         print(f"[INFO] PROVEDOR CHAMADO: Groq Whisper (fallback) | source={source}")
-        return self._transcribe_groq(audio_path, keywords, prompt_text, on_chunk)
+        return self._transcribe_groq(audio_path, keywords, prompt_text, on_chunk, on_status=on_status)
 
     # ------------------------------------------------------------------
     # Gemini backend
@@ -252,6 +253,7 @@ class Transcriber:
         keywords: list[str],
         on_chunk: callable = None,
         source: str = "mic",
+        on_status: callable = None,
     ) -> str:
         """Upload audio to Gemini Files API and request transcription.
 
@@ -274,6 +276,8 @@ class Transcriber:
         system_instruction = self._build_system_instruction(prompt_text, keywords, source)
 
         # Upload the audio file to Files API (SDK >= 1.0 uses file=, not path=)
+        if on_status:
+            on_status({"phase": "uploading", "message": "Enviando áudio para Google Gemini..."})
         print(f"[DEBUG] Gemini: iniciando upload do arquivo {audio_path.name}")
         try:
             uploaded_file = client.files.upload(file=str(audio_path))
@@ -282,6 +286,9 @@ class Transcriber:
             raise TranscriptionError(
                 f"Falha ao fazer upload do audio: {exc}"
             ) from exc
+
+        if on_status:
+            on_status({"phase": "transcribing", "message": "Gemini processando áudio..."})
 
         try:
             response_stream = client.models.generate_content_stream(
@@ -294,6 +301,7 @@ class Transcriber:
 
             full_text_chunks = []
             chunk_count = 0
+            first_chunk = True
             for chunk in response_stream:
                 if chunk and hasattr(chunk, "text") and chunk.text:
                     chunk_count += 1
@@ -304,6 +312,9 @@ class Transcriber:
                         f"[DEBUG] Gemini chunk #{chunk_count}: "
                         f"len={len(chunk.text)} preview='{preview}'"
                     )
+                    if first_chunk and on_status:
+                        on_status({"phase": "streaming", "message": "Recebendo transcrição..."})
+                        first_chunk = False
                     if on_chunk:
                         on_chunk(chunk.text)
 
@@ -376,6 +387,7 @@ class Transcriber:
         keywords: list[str],
         prompt_text: str,
         on_chunk: callable = None,
+        on_status: callable = None,
     ) -> str:
         """Transcribe using Groq Whisper + review agent.
 
@@ -384,7 +396,9 @@ class Transcriber:
         in a single API call (non-streaming) — the result is delivered
         as a single chunk via on_chunk.
         """
-        result = self._transcribe_groq_single(audio_path, keywords, prompt_text)
+        if on_status:
+            on_status({"phase": "transcribing", "message": "Enviando para Groq Whisper..."})
+        result = self._transcribe_groq_single(audio_path, keywords, prompt_text, on_status=on_status)
         if on_chunk:
             on_chunk(result)
         return result
@@ -394,6 +408,7 @@ class Transcriber:
         audio_path: Path,
         keywords: list[str],
         prompt_text: str,
+        on_status: callable = None,
     ) -> str:
         """Transcribe a single audio file with Groq Whisper (no chunking)."""
         print(f"[DEBUG] Groq: iniciando transcricao de {audio_path.name}")
@@ -434,6 +449,8 @@ class Transcriber:
             ) from exc
 
         # --- Review step: grammar / punctuation correction ---
+        if on_status:
+            on_status({"phase": "reviewing", "message": "Revisando gramática e pontuação..."})
         print("[DEBUG] Groq: chamando TranscriptionReviewAgent...")
         try:
             from app.agents import TranscriptionReviewAgent
