@@ -23,6 +23,9 @@ let abortController: AbortController | null = null;
 // Session ID captured from SSE response headers, used for server-side cancel
 const sessionId = ref<string | null>(null);
 
+// Tracks if WAV generation timeout has expired (race condition fix)
+let wavGenerationTimedOut = false;
+
 let quillCursorIndex = 0;
 
 export function useTranscriptionState() {
@@ -37,6 +40,7 @@ export function useTranscriptionState() {
     // Create new AbortController for this transcription
     abortController = new AbortController();
     sessionId.value = null;
+    const { setPhase, reset: resetProgress } = useTranscriptionProgress();
     try {
       const arrayBuffer = await api.readFile(wavPath);
       if (!arrayBuffer) throw new Error('Failed to read audio file');
@@ -86,7 +90,6 @@ export function useTranscriptionState() {
       let buffer = '';
       let chunksReceived = 0;
       let pendingStatusEvent = false;
-      const { setPhase, reset: resetProgress } = useTranscriptionProgress();
 
       while (true) {
         const { done, value } = await reader.read();
@@ -211,12 +214,13 @@ export function useTranscriptionState() {
   async function stopAndTranscribe() {
     state.value = 'TRANSCRIBING';
     if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
+    wavGenerationTimedOut = false;  // Reset timeout flag
 
     api.audioCommand({ action: 'stop' });
 
     // Wait for wav_path to arrive via onAudioStatus, then transcribe
     const checkPath = setInterval(() => {
-      if (pendingWavPath) {
+      if (pendingWavPath && !wavGenerationTimedOut) {
         clearInterval(checkPath);
         transcribeFile(pendingWavPath);
         pendingWavPath = null;
@@ -227,6 +231,7 @@ export function useTranscriptionState() {
     setTimeout(() => {
       clearInterval(checkPath);
       if (state.value === 'TRANSCRIBING') {
+        wavGenerationTimedOut = true;
         const { setPhase } = useTranscriptionProgress();
         setPhase('error', 'Timeout: arquivo de áudio não foi gerado.');
         pendingWavPath = null;
@@ -287,7 +292,8 @@ export function useTranscriptionState() {
       recordingStartResolve(true);
       recordingStartResolve = null;
     }
-    if (!status.recording && status.wav_path) {
+    // Only set wav_path if timeout hasn't expired (race condition fix)
+    if (!status.recording && status.wav_path && !wavGenerationTimedOut) {
       pendingWavPath = status.wav_path;
     }
   });
