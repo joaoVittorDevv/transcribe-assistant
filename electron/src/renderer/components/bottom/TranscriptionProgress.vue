@@ -57,10 +57,14 @@
     <!-- Status message -->
     <div class="mt-2 text-center">
       <p
-        class="text-xs text-white/60 status-message"
-        :class="{ 'status-active': currentPhase !== 'idle' && currentPhase !== 'done' }"
+        class="text-xs status-message"
+        :class="{
+          'text-white/60': currentPhase !== 'error',
+          'text-red-400': currentPhase === 'error',
+          'status-active': currentPhase !== 'idle' && currentPhase !== 'done' && currentPhase !== 'error'
+        }"
       >
-        {{ statusMessage || t('progress.default_message') }}
+        {{ currentPhase === 'error' ? (errorMsg || t('progress.default_message')) : (statusMessage || t('progress.default_message')) }}
       </p>
     </div>
 
@@ -68,9 +72,19 @@
     <div class="mt-2 h-1 w-full rounded-full bg-white/5 overflow-hidden">
       <div
         class="progress-bar-fill h-full rounded-full transition-all duration-500 ease-out"
-        :class="currentPhase === 'done' ? 'bg-accent-green' : 'bg-accent-blue'"
+        :class="currentPhase === 'done' ? 'bg-accent-green' : currentPhase === 'error' ? 'bg-red-500' : 'bg-accent-blue'"
         :style="{ width: progressPercent + '%' }"
       />
+    </div>
+
+    <!-- Dismiss button on error -->
+    <div v-if="currentPhase === 'error'" class="mt-2 flex justify-center">
+      <button
+        @click="closeError"
+        class="error-dismiss-btn text-xs px-3 py-1 rounded bg-red-500/20 border border-red-500/50 text-red-300 hover:bg-red-500/30 transition-colors"
+      >
+        ✕ Fechar
+      </button>
     </div>
   </div>
 </template>
@@ -79,6 +93,9 @@
 import { computed, h, type FunctionalComponent } from 'vue';
 import { useTranscriptionProgress, PROGRESS_STEPS, type ProgressPhase } from '../../composables/useTranscriptionProgress';
 import { t } from '../../i18n';
+
+// Destructure error-related exports (module-level singletons so destructure separately)
+const { errorMessage: errorMsg, isStepErrored: stepErrored, dismissError: closeError } = useTranscriptionProgress();
 
 const {
   currentPhase,
@@ -159,6 +176,9 @@ function stepNodeClass(_stepId: string) {
 
 function stepCircleClass(stepId: string) {
   const phase = stepId as ProgressPhase;
+  if (stepErrored(phase)) {
+    return 'bg-red-500 shadow-[0_0_12px_rgba(239,68,68,0.5)] error-glow';
+  }
   if (isStepCompleted(phase)) {
     return 'bg-accent-green shadow-[0_0_8px_rgba(34,197,94,0.4)]';
   }
@@ -230,6 +250,19 @@ function stepCircleClass(stepId: string) {
 
 .status-active {
   animation: statusPulse 3s ease-in-out infinite;
+}
+
+.error-glow {
+  animation: errorPulse 1.5s ease-in-out infinite;
+}
+
+@keyframes errorPulse {
+  0%, 100% {
+    box-shadow: 0 0 8px rgba(239, 68, 68, 0.4);
+  }
+  50% {
+    box-shadow: 0 0 16px rgba(239, 68, 68, 0.7);
+  }
 }
 
 @keyframes statusPulse {

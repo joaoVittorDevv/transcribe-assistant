@@ -321,6 +321,8 @@ class Transcriber:
             final_text = "".join(full_text_chunks).strip()
             # Apply output filter to strip any chat-like artifacts
             final_text = _filter_transcription_output(final_text)
+            if on_status:
+                on_status({"phase": "reviewing", "message": "Revisando texto final..."})
             print(
                 f"[DEBUG] Gemini: transcricao concluida "
                 f"({len(final_text)} chars, {chunk_count} chunks)"

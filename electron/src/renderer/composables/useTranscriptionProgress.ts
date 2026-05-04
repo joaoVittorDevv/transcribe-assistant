@@ -9,7 +9,8 @@ export type ProgressPhase =
   | 'transcribing'
   | 'streaming'
   | 'reviewing'
-  | 'done';
+  | 'done'
+  | 'error';
 
 export interface ProgressStep {
   id: ProgressPhase;
@@ -31,11 +32,17 @@ export const PROGRESS_STEPS: ProgressStep[] = [
 // Module-level shared state (singleton pattern matching useTranscriptionState)
 const currentPhase = ref<ProgressPhase>('idle');
 const statusMessage = ref<string>('');
+const errorMessage = ref<string>('');
+const erroredStepId = ref<ProgressPhase | null>(null);
 
 export function useTranscriptionProgress() {
   function setPhase(phase: ProgressPhase, message?: string) {
+    if (phase === 'error') {
+      erroredStepId.value = currentPhase.value;
+      if (message) errorMessage.value = message;
+    }
     currentPhase.value = phase;
-    if (message) {
+    if (message && phase !== 'error') {
       statusMessage.value = message;
     }
   }
@@ -43,6 +50,16 @@ export function useTranscriptionProgress() {
   function reset() {
     currentPhase.value = 'idle';
     statusMessage.value = '';
+    errorMessage.value = '';
+    erroredStepId.value = null;
+  }
+
+  function isStepErrored(stepId: ProgressPhase): boolean {
+    return erroredStepId.value === stepId;
+  }
+
+  function dismissError() {
+    reset();
   }
 
   const activeIndex = computed(() => {
@@ -72,6 +89,8 @@ export function useTranscriptionProgress() {
   return {
     currentPhase,
     statusMessage,
+    errorMessage,
+    erroredStepId,
     activeIndex,
     progressPercent,
     setPhase,
@@ -79,5 +98,7 @@ export function useTranscriptionProgress() {
     isStepCompleted,
     isStepActive,
     isStepPending,
+    isStepErrored,
+    dismissError,
   };
 }

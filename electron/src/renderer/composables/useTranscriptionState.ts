@@ -111,6 +111,11 @@ export function useTranscriptionState() {
               const statusPayload = JSON.parse(dataStr);
               const phase = statusPayload.phase as ProgressPhase;
               const message = statusPayload.message as string | undefined;
+              // Handle error phase from server (not in PROGRESS_STEPS — it's a terminal state)
+              if (phase === 'error') {
+                setPhase('error', message || 'Erro na transcrição');
+                continue;
+              }
               // Only dispatch known phases to avoid progress glitches
               const knownPhases = new Set(PROGRESS_STEPS.map((s) => s.id));
               if (phase && knownPhases.has(phase)) {
@@ -130,10 +135,10 @@ export function useTranscriptionState() {
             // Brief delay to show done state before resetting
             setTimeout(() => {
               resetProgress();
-            }, 1500);
-            state.value = 'IDLE';
-            elapsedSeconds.value = 0;
-            sessionId.value = null;
+              state.value = 'IDLE';
+              elapsedSeconds.value = 0;
+              sessionId.value = null;
+            }, 2000);
             // Clean up Vault file on successful transcription
             if (wavPath) {
               api.deleteFile(wavPath).catch(() => {});
@@ -142,10 +147,9 @@ export function useTranscriptionState() {
           }
           if (dataStr.startsWith('[ERROR]')) {
             console.error('[transcription]', dataStr);
-            resetProgress();
-            state.value = 'IDLE';
-            elapsedSeconds.value = 0;
-            sessionId.value = null;
+            const errorMsg = dataStr.slice(7).trim() || 'Erro desconhecido na transcrição';
+            setPhase('error' as ProgressPhase, errorMsg);
+            // Keep bar visible — user must dismiss manually
             return;
           }
           // Server sends raw text chunks (not JSON) — insert directly
@@ -157,9 +161,7 @@ export function useTranscriptionState() {
 
       if (!response.ok) {
         console.error('[transcription] HTTP error:', response.status, response.statusText);
-        state.value = 'IDLE';
-        elapsedSeconds.value = 0;
-        sessionId.value = null;
+        setPhase('error', `Erro HTTP ${response.status}: ${response.statusText}`);
         return;
       }
     } catch (err: any) {
@@ -169,10 +171,11 @@ export function useTranscriptionState() {
         return;
       }
       console.error('[transcription] error:', err);
+      setPhase('error', err?.message || 'Erro durante a transcrição');
+      return;
     }
-    state.value = 'IDLE';
-    elapsedSeconds.value = 0;
-    sessionId.value = null;
+    // Only reached if stream ends without [DONE] or [ERROR] — show error, don't auto-close
+    setPhase('error', 'Conexão perdida com o servidor de transcrição.');
   }
 
   async function startRecording() {
@@ -224,8 +227,8 @@ export function useTranscriptionState() {
     setTimeout(() => {
       clearInterval(checkPath);
       if (state.value === 'TRANSCRIBING') {
-        state.value = 'IDLE';
-        elapsedSeconds.value = 0;
+        const { setPhase } = useTranscriptionProgress();
+        setPhase('error', 'Timeout: arquivo de áudio não foi gerado.');
         pendingWavPath = null;
       }
     }, 5000);
