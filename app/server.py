@@ -60,49 +60,84 @@ def _sse_frame(event: str, data: str) -> bytes:
 # ---------------------------------------------------------------------------
 
 
+# Sentence-ending punctuation — used to detect boundaries when LLM
+# omits whitespace after . ! ? between streaming tokens (e.g., "word."
+# then "nextword" arriving in separate Gemini chunks).
+_SENTENCE_END = set(".!?。！？")  # inclui pontuação fullwidth
+
+
 def _extract_word_chunks(buffer: str) -> tuple[str, str]:
     """
     Extract complete word+whitespace chunks from the front of buffer.
+
     Returns (text_to_emit, remaining_buffer).
-    A complete chunk = word followed by whitespace (complete word).
-    Incomplete trailing word stays in remaining_buffer.
+
+    A chunk is considered complete when:
+      - It is a whitespace run  (emit immediately)
+      - It is a word followed by whitespace  (complete word)
+      - It is a word ending with sentence-ending punctuation (.!?) AND the
+        very next character is a letter (sentence boundary without space).
+        In this case we inject a virtual space after the punctuation so the
+        frontend renders the break correctly.
+
+    Trailing incomplete words stay in the residual buffer.
     """
     if not buffer:
         return "", ""
 
-    # Walk through buffer, collecting complete chunks
     emit_parts = []
     i = 0
     n = len(buffer)
+    buffer_consumed = 0  # tracks actual buffer chars consumed (excludes virtual spaces)
 
     while i < n:
-        # Skip whitespace runs and collect them
+        # --- whitespace run: emit immediately ---
         if buffer[i].isspace():
             start = i
             while i < n and buffer[i].isspace():
                 i += 1
             emit_parts.append(buffer[start:i])
+            buffer_consumed = i
             continue
 
-        # Word (non-whitespace chars)
+        # --- scan a word, stopping early at sentence boundaries ---
         start = i
         while i < n and not buffer[i].isspace():
+            # Sentence-boundary detection: .!? followed by a letter (not digit)
+            if (
+                buffer[i] in _SENTENCE_END
+                and i + 1 < n
+                and buffer[i + 1].isalpha()
+            ):
+                i += 1  # include the punctuation in this word
+                break   # stop — rest is the next word
             i += 1
         word = buffer[start:i]
 
-        # Only emit the word if it is followed by whitespace (i.e., it's complete)
-        if i < n:
+        if i >= n:
+            # Reached end of buffer — word may be incomplete, keep in residual
+            pass
+        elif not buffer[i].isspace():
+            # Stopped at a sentence boundary (punctuation followed by letter)
+            # Emit word + virtual space so frontend separates the sentences
             emit_parts.append(word)
-        # If i >= n, word is at the end without trailing whitespace — incomplete, keep in buffer
+            emit_parts.append(" ")  # virtual — not from buffer
+            # buffer_consumed advances only by the word length (not the virtual space)
+            buffer_consumed = i
+        else:
+            # Word followed by whitespace — complete, emit normally
+            emit_parts.append(word)
+            buffer_consumed = i
 
     emit_text = "".join(emit_parts)
+    residual = buffer[buffer_consumed:]
 
-    # Residual = everything in buffer after the last emitted character
-    # Last complete chunk ends at last_emitted_idx
-    last_emitted_idx = 0
-    for part in emit_parts:
-        last_emitted_idx += len(part)
-    residual = buffer[last_emitted_idx:]
+    if residual:
+        logger.debug(
+            "[WORD-BUF] residual=%d chars preview='%s'",
+            len(residual),
+            residual[:60].replace("\n", "\\n"),
+        )
 
     return emit_text, residual
 
@@ -203,9 +238,15 @@ async def _transcription_events(
 
             # Append to word buffer
             word_buffer += chunk_text
+            logger.debug(
+                "[WORD-BUF] after-append len=%d preview='%s'",
+                len(word_buffer),
+                word_buffer[:80].replace("\n", "\\n"),
+            )
 
-            # Extract and emit only complete words (word + trailing whitespace)
-            # Incomplete words at the end stay in word_buffer
+            # Extract and emit only complete words (word + trailing whitespace,
+            # or sentence-ending punctuation followed by letter).
+            # Incomplete words at the end stay in word_buffer.
             emit_text, word_buffer = _extract_word_chunks(word_buffer)
 
             if emit_text:
@@ -219,7 +260,7 @@ async def _transcription_events(
                     "[CHUNK-OUT] #%d len=%d preview='%s'",
                     chunks_emitted,
                     len(emit_text),
-                    emit_text[:50],
+                    emit_text[:80].replace("\n", "\\n"),
                 )
 
         # Flush any remaining incomplete word at the end
