@@ -25,6 +25,8 @@ const sessionId = ref<string | null>(null);
 
 // Tracks if WAV generation timeout has expired (race condition fix)
 let wavGenerationTimedOut = false;
+// Interval ID for WAV polling — cleared on cancel to prevent stale triggers
+let wavCheckInterval: ReturnType<typeof setInterval> | null = null;
 
 export function useTranscriptionState() {
   const { activeTabId, updateContent } = useTabs();
@@ -217,29 +219,51 @@ export function useTranscriptionState() {
   async function stopAndTranscribe() {
     state.value = 'TRANSCRIBING';
     if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
-    wavGenerationTimedOut = false;  // Reset timeout flag
+    wavGenerationTimedOut = false;
 
     api.audioCommand({ action: 'stop' });
 
-    // Wait for wav_path to arrive via onAudioStatus, then transcribe
-    const checkPath = setInterval(() => {
+    const { setPhase, statusMessage } = useTranscriptionProgress();
+
+    let phaseTwoTimeout: ReturnType<typeof setTimeout> | null = null;
+    let phaseThreeTimeout: ReturnType<typeof setTimeout> | null = null;
+
+    // Poll every 50ms for the WAV path.
+    // On arrival: cancel all timeouts, clear status, start transcription.
+    wavCheckInterval = setInterval(() => {
       if (pendingWavPath && !wavGenerationTimedOut) {
-        clearInterval(checkPath);
+        clearInterval(wavCheckInterval!);
+        wavCheckInterval = null;
+        if (phaseTwoTimeout) clearTimeout(phaseTwoTimeout);
+        if (phaseThreeTimeout) clearTimeout(phaseThreeTimeout);
+        // Clear any "waiting" message from phase 2
+        statusMessage.value = '';
         transcribeFile(pendingWavPath);
         pendingWavPath = null;
       }
     }, 50);
 
-    // Safety timeout: if no wav_path within 5s, give up
-    setTimeout(() => {
-      clearInterval(checkPath);
-      if (state.value === 'TRANSCRIBING') {
-        wavGenerationTimedOut = true;
-        const { setPhase } = useTranscriptionProgress();
-        setPhase('error', 'Timeout: arquivo de áudio não foi gerado.');
-        pendingWavPath = null;
+    // Phase 2 (5 s): gravação longa — mostra feedback mas continua esperando
+    phaseTwoTimeout = setTimeout(() => {
+      if (state.value === 'TRANSCRIBING' && !pendingWavPath) {
+        statusMessage.value = 'Finalizando gravação longa…';
+        console.log('[transcription] WAV generation taking longer than 5s — still waiting');
       }
     }, 5000);
+
+    // Phase 3 (30 s): erro real — engine não respondeu a tempo
+    phaseThreeTimeout = setTimeout(() => {
+      if (wavCheckInterval) {
+        clearInterval(wavCheckInterval);
+        wavCheckInterval = null;
+      }
+      if (phaseTwoTimeout) clearTimeout(phaseTwoTimeout);
+      if (state.value === 'TRANSCRIBING') {
+        wavGenerationTimedOut = true;
+        setPhase('error', 'Timeout: gravação não finalizou a tempo. Tente novamente.');
+        pendingWavPath = null;
+      }
+    }, 30000);
   }
 
   async function handleRecordClick() {
@@ -268,6 +292,11 @@ export function useTranscriptionState() {
         fetch(`http://localhost:18763/transcribe/${sessionId.value}`, {
           method: 'DELETE',
         }).catch(() => {});
+      }
+      // Stop WAV polling if still waiting for engine
+      if (wavCheckInterval) {
+        clearInterval(wavCheckInterval);
+        wavCheckInterval = null;
       }
       // Clean up Vault WAV file if we have one
       if (pendingWavPath) {
