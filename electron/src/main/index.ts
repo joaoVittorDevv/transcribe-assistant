@@ -165,6 +165,11 @@ function setupIpcHandlers(): void {
     mainWindow?.webContents.send('insert-text', text);
   });
 
+  // Reset insertion point — signals editor to re-capture cursor on next chunk
+  ipcMain.on('reset-insertion-point', () => {
+    mainWindow?.webContents.send('reset-insertion-point');
+  });
+
   ipcMain.handle('delete-file', async (_event, filePath: string) => {
     try {
       fs.unlinkSync(filePath);

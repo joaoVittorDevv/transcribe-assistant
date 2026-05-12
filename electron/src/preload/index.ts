@@ -14,6 +14,8 @@ export interface ElectronAPI {
   deleteFile(path: string): Promise<boolean>;
   insertTextAtCursor(text: string): Promise<boolean>;
   onInsertText(callback: (text: string) => void): () => void;
+  resetInsertionPoint(): void;
+  onResetInsertionPoint(callback: () => void): () => void;
 }
 
 const electronAPI: ElectronAPI = {
@@ -60,6 +62,16 @@ const electronAPI: ElectronAPI = {
     const handler = (_event: Electron.IpcRendererEvent, text: string) => callback(text);
     ipcRenderer.on('insert-text', handler);
     return () => ipcRenderer.removeListener('insert-text', handler);
+  },
+
+  resetInsertionPoint() {
+    ipcRenderer.send('reset-insertion-point');
+  },
+
+  onResetInsertionPoint(callback) {
+    const handler = () => callback();
+    ipcRenderer.on('reset-insertion-point', handler);
+    return () => ipcRenderer.removeListener('reset-insertion-point', handler);
   },
 };
 

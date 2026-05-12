@@ -42,6 +42,11 @@ const api = window.electronAPI as ElectronAPI;
 const activeFormats = reactive<Set<string>>(new Set());
 
 let cleanupInsertText: (() => void) | null = null;
+let cleanupResetInsertion: (() => void) | null = null;
+// Tracks insertion point during transcription streaming.
+// On first chunk, captured from current cursor. Advanced by each chunk.
+// Reset to null when transcription ends or user switches tabs.
+let transcriptionInsertIndex: number | null = null;
 
 // ------------------------------------------------------------------
 // Find & Replace state
@@ -373,11 +378,41 @@ onMounted(() => {
     computeActiveFormats(range);
   });
 
-  // Listen for transcription text insertions at cursor
+  // Listen for transcription text insertions at cursor.
+  // Tracks insertion point locally so chunk order is always preserved:
+  // - Captures cursor position on first chunk
+  // - Inserts at tracked index (NOT re-reading cursor each time)
+  // - Advances index by chunk length
+  // - Moves cursor to end of inserted text
   cleanupInsertText = api.onInsertText((text: string) => {
     if (!quill) return;
-    const sel = quill.getSelection(true);
-    quill.insertText(sel?.index ?? quill.getLength(), text);
+
+    // Initialize insertion point from current cursor on first chunk
+    if (transcriptionInsertIndex === null) {
+      const sel = quill.getSelection();
+      // Quill's getLength() includes trailing \n — valid range is 0..getLength()-1
+      transcriptionInsertIndex = sel ? sel.index : Math.max(0, quill.getLength() - 1);
+    }
+
+    // Safety clamp: if user deleted text during transcription, don't overflow
+    const maxIndex = Math.max(0, quill.getLength() - 1);
+    if (transcriptionInsertIndex > maxIndex) {
+      transcriptionInsertIndex = maxIndex;
+    }
+
+    // Insert at the tracked position (NOT the current cursor)
+    quill.insertText(transcriptionInsertIndex, text, 'user');
+
+    // Advance the insertion point by the length of text just inserted
+    transcriptionInsertIndex += text.length;
+
+    // Move cursor to end of inserted text so user sees streaming progress
+    quill.setSelection(transcriptionInsertIndex, 0);
+  });
+
+  // Reset insertion tracking when new transcription starts
+  cleanupResetInsertion = api.onResetInsertionPoint(() => {
+    transcriptionInsertIndex = null;
   });
 
   // Register editor API (clear + markdown export)
@@ -391,6 +426,7 @@ onUnmounted(() => {
   document.removeEventListener('keydown', onEditorKeydown);
   quill = null;
   cleanupInsertText?.();
+  cleanupResetInsertion?.();
 });
 
 // Sync when active tab changes or when tab content is updated in-place
@@ -398,6 +434,8 @@ watch(activeTabId, () => {
   if (!quill) return;
   const tab = getActiveTab();
   const newText = tab?.content ?? '';
+  // Reset insertion tracking on tab switch — insertion point is tab-specific
+  transcriptionInsertIndex = null;
   if (quill.getText() !== newText + '\n') {
     quill.setText(newText);
   }

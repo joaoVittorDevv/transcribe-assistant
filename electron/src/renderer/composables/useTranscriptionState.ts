@@ -26,8 +26,6 @@ const sessionId = ref<string | null>(null);
 // Tracks if WAV generation timeout has expired (race condition fix)
 let wavGenerationTimedOut = false;
 
-let quillCursorIndex = 0;
-
 export function useTranscriptionState() {
   const { activeTabId, updateContent } = useTabs();
   const api = window.electronAPI as ElectronAPI;
@@ -36,7 +34,8 @@ export function useTranscriptionState() {
 
   async function transcribeFile(wavPath: string) {
     let accumulated = '';
-    quillCursorIndex = 0;
+    // Reset editor’s tracked insertion point so it re-captures cursor on first chunk
+    api.resetInsertionPoint();
     // Create new AbortController for this transcription
     abortController = new AbortController();
     sessionId.value = null;
@@ -135,6 +134,8 @@ export function useTranscriptionState() {
           if (dataStr === '[DONE]') {
             console.log('[Transcription] completed —', chunksReceived, 'chunks received');
             setPhase('done');
+            // Reset editor insertion tracking so next transcription re-captures cursor
+            api.resetInsertionPoint();
             // Brief delay to show done state before resetting
             setTimeout(() => {
               resetProgress();
@@ -152,6 +153,8 @@ export function useTranscriptionState() {
             console.error('[transcription]', dataStr);
             const errorMsg = dataStr.slice(7).trim() || 'Erro desconhecido na transcrição';
             setPhase('error' as ProgressPhase, errorMsg);
+            // Reset editor insertion tracking so next transcription re-captures cursor
+            api.resetInsertionPoint();
             // Keep bar visible — user must dismiss manually
             return;
           }

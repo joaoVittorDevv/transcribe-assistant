@@ -12,6 +12,8 @@ export interface ElectronAPI {
   deleteFile(path: string): Promise<boolean>;
   insertTextAtCursor(text: string): Promise<boolean>;
   onInsertText(callback: (text: string) => void): () => void;
+  resetInsertionPoint(): void;
+  onResetInsertionPoint(callback: () => void): () => void;
 }
 
 declare global {
