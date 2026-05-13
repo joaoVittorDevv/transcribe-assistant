@@ -90,7 +90,69 @@ export function useTranscriptionState() {
       const decoder = new TextDecoder();
       let buffer = '';
       let chunksReceived = 0;
-      let pendingStatusEvent = false;
+      let eventType = '';
+      const dataLines: string[] = [];
+
+      // Flush an accumulated SSE event.
+      // Returns 'return' if caller should exit transcribeFile.
+      const flushEvent = async (type: string, data: string): Promise<'continue' | 'return'> => {
+        if (type === 'status') {
+          try {
+            const statusPayload = JSON.parse(data);
+            const phase = statusPayload.phase as ProgressPhase;
+            const message = statusPayload.message as string | undefined;
+            // Handle error phase from server (not in PROGRESS_STEPS — it's a terminal state)
+            if (phase === 'error') {
+              setPhase('error', message || 'Erro na transcrição');
+              return 'continue';
+            }
+            // Only dispatch known phases to avoid progress glitches
+            const knownPhases = new Set(PROGRESS_STEPS.map((s) => s.id));
+            if (phase && knownPhases.has(phase)) {
+              setPhase(phase, message);
+              console.debug('[Transcription] status:', phase, message ?? '');
+            } else if (phase) {
+              console.debug('[Transcription] ignoring unknown phase:', phase);
+            }
+          } catch (e) {
+            console.warn('[Transcription] failed to parse status event:', data);
+          }
+          return 'continue';
+        }
+        // 'chunk' event (or default) — handle [DONE], [ERROR], or text
+        if (data === '[DONE]') {
+          console.log('[Transcription] completed —', chunksReceived, 'chunks received');
+          setPhase('done');
+          // Reset editor insertion tracking so next transcription re-captures cursor
+          api.resetInsertionPoint();
+          // Brief delay to show done state before resetting
+          setTimeout(() => {
+            resetProgress();
+            state.value = 'IDLE';
+            elapsedSeconds.value = 0;
+            sessionId.value = null;
+          }, 2000);
+          // Clean up Vault file on successful transcription
+          if (wavPath) {
+            api.deleteFile(wavPath).catch(() => {});
+          }
+          return 'return';
+        }
+        if (data.startsWith('[ERROR]')) {
+          console.error('[transcription]', data);
+          const errorMsg = data.slice(7).trim() || 'Erro desconhecido na transcrição';
+          setPhase('error' as ProgressPhase, errorMsg);
+          // Reset editor insertion tracking so next transcription re-captures cursor
+          api.resetInsertionPoint();
+          // Keep bar visible — user must dismiss manually
+          return 'return';
+        }
+        // Server sends raw text chunks (not JSON) — insert directly
+        chunksReceived++;
+        console.debug('[Transcription] chunk #' + chunksReceived + ':', data.length, 'chars');
+        await api.insertTextAtCursor(data);
+        return 'continue';
+      }
 
       while (true) {
         const { done, value } = await reader.read();
@@ -99,72 +161,33 @@ export function useTranscriptionState() {
         const lines = buffer.split('\n');
         buffer = lines.pop() ?? '';
         for (const line of lines) {
-          // Detect SSE event type for status messages
-          if (line.startsWith('event:') && line.includes('status')) {
-            pendingStatusEvent = true;
-            continue;
-          }
-          if (!line.startsWith('data:')) continue;
-          // Extract payload preserving trailing whitespace (backend controls word spacing)
-          let dataStr = line.slice(5);
-          if (dataStr.startsWith(' ')) dataStr = dataStr.slice(1);
-          // Handle status events: parse JSON and dispatch to progress composable
-          if (pendingStatusEvent) {
-            pendingStatusEvent = false;
-            try {
-              const statusPayload = JSON.parse(dataStr);
-              const phase = statusPayload.phase as ProgressPhase;
-              const message = statusPayload.message as string | undefined;
-              // Handle error phase from server (not in PROGRESS_STEPS — it's a terminal state)
-              if (phase === 'error') {
-                setPhase('error', message || 'Erro na transcrição');
-                continue;
-              }
-              // Only dispatch known phases to avoid progress glitches
-              const knownPhases = new Set(PROGRESS_STEPS.map((s) => s.id));
-              if (phase && knownPhases.has(phase)) {
-                setPhase(phase, message);
-                console.debug('[Transcription] status:', phase, message ?? '');
-              } else if (phase) {
-                console.debug('[Transcription] ignoring unknown phase:', phase);
-              }
-            } catch (e) {
-              console.warn('[Transcription] failed to parse status event:', dataStr);
+          // Empty line = SSE event boundary → flush accumulated event
+          if (line === '' || line === '\r') {
+            if (dataLines.length > 0) {
+              const dataStr = dataLines.join('\n');
+              const result = await flushEvent(eventType, dataStr);
+              eventType = '';
+              dataLines.length = 0;
+              if (result === 'return') return;
             }
             continue;
           }
-          if (dataStr === '[DONE]') {
-            console.log('[Transcription] completed —', chunksReceived, 'chunks received');
-            setPhase('done');
-            // Reset editor insertion tracking so next transcription re-captures cursor
-            api.resetInsertionPoint();
-            // Brief delay to show done state before resetting
-            setTimeout(() => {
-              resetProgress();
-              state.value = 'IDLE';
-              elapsedSeconds.value = 0;
-              sessionId.value = null;
-            }, 2000);
-            // Clean up Vault file on successful transcription
-            if (wavPath) {
-              api.deleteFile(wavPath).catch(() => {});
-            }
-            return;
+          // Accumulate SSE fields
+          if (line.startsWith('event:')) {
+            eventType = line.slice(6).trim();
+          } else if (line.startsWith('data:')) {
+            let dataContent = line.slice(5);
+            if (dataContent.startsWith(' ')) dataContent = dataContent.slice(1);
+            dataLines.push(dataContent);
           }
-          if (dataStr.startsWith('[ERROR]')) {
-            console.error('[transcription]', dataStr);
-            const errorMsg = dataStr.slice(7).trim() || 'Erro desconhecido na transcrição';
-            setPhase('error' as ProgressPhase, errorMsg);
-            // Reset editor insertion tracking so next transcription re-captures cursor
-            api.resetInsertionPoint();
-            // Keep bar visible — user must dismiss manually
-            return;
-          }
-          // Server sends raw text chunks (not JSON) — insert directly
-          chunksReceived++;
-          console.debug('[Transcription] chunk #' + chunksReceived + ':', dataStr.length, 'chars');
-          await api.insertTextAtCursor(dataStr);
+          // Lines not starting with event: or data: are SSE comments — ignored
         }
+      }
+      // Flush last event if stream ended without trailing empty line
+      if (dataLines.length > 0) {
+        const dataStr = dataLines.join('\n');
+        const result = await flushEvent(eventType, dataStr);
+        if (result === 'return') return;
       }
 
       if (!response.ok) {

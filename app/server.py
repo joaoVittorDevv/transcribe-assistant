@@ -46,100 +46,15 @@ _session_lock = threading.Lock()
 
 
 def _sse_frame(event: str, data: str) -> bytes:
-    """Format an SSE frame."""
-    return f"event: {event}\ndata: {data}\n\n".encode("utf-8")
+    """Format an SSE frame, correctly encoding multi-line data per spec."""
+    lines = data.split("\n")
+    data_lines = "".join(f"data: {line}\n" for line in lines)
+    return f"event: {event}\n{data_lines}\n".encode("utf-8")
 
 
 # ---------------------------------------------------------------------------
 # SSE generator
 # ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
-# Word-boundary buffering
-# ---------------------------------------------------------------------------
-
-
-# Sentence-ending punctuation — used to detect boundaries when LLM
-# omits whitespace after . ! ? between streaming tokens (e.g., "word."
-# then "nextword" arriving in separate Gemini chunks).
-_SENTENCE_END = set(".!?。！？")  # inclui pontuação fullwidth
-
-
-def _extract_word_chunks(buffer: str) -> tuple[str, str]:
-    """
-    Extract complete word+whitespace chunks from the front of buffer.
-
-    Returns (text_to_emit, remaining_buffer).
-
-    A chunk is considered complete when:
-      - It is a whitespace run  (emit immediately)
-      - It is a word followed by whitespace  (complete word)
-      - It is a word ending with sentence-ending punctuation (.!?) AND the
-        very next character is a letter (sentence boundary without space).
-        In this case we inject a virtual space after the punctuation so the
-        frontend renders the break correctly.
-
-    Trailing incomplete words stay in the residual buffer.
-    """
-    if not buffer:
-        return "", ""
-
-    emit_parts = []
-    i = 0
-    n = len(buffer)
-    buffer_consumed = 0  # tracks actual buffer chars consumed (excludes virtual spaces)
-
-    while i < n:
-        # --- whitespace run: emit immediately ---
-        if buffer[i].isspace():
-            start = i
-            while i < n and buffer[i].isspace():
-                i += 1
-            emit_parts.append(buffer[start:i])
-            buffer_consumed = i
-            continue
-
-        # --- scan a word, stopping early at sentence boundaries ---
-        start = i
-        while i < n and not buffer[i].isspace():
-            # Sentence-boundary detection: .!? followed by a letter (not digit)
-            if (
-                buffer[i] in _SENTENCE_END
-                and i + 1 < n
-                and buffer[i + 1].isalpha()
-            ):
-                i += 1  # include the punctuation in this word
-                break   # stop — rest is the next word
-            i += 1
-        word = buffer[start:i]
-
-        if i >= n:
-            # Reached end of buffer — word may be incomplete, keep in residual
-            pass
-        elif not buffer[i].isspace():
-            # Stopped at a sentence boundary (punctuation followed by letter)
-            # Emit word + virtual space so frontend separates the sentences
-            emit_parts.append(word)
-            emit_parts.append(" ")  # virtual — not from buffer
-            # buffer_consumed advances only by the word length (not the virtual space)
-            buffer_consumed = i
-        else:
-            # Word followed by whitespace — complete, emit normally
-            emit_parts.append(word)
-            buffer_consumed = i
-
-    emit_text = "".join(emit_parts)
-    residual = buffer[buffer_consumed:]
-
-    if residual:
-        logger.debug(
-            "[WORD-BUF] residual=%d chars preview='%s'",
-            len(residual),
-            residual[:60].replace("\n", "\\n"),
-        )
-
-    return emit_text, residual
 
 
 async def _transcription_events(
@@ -205,10 +120,8 @@ async def _transcription_events(
     with _session_lock:
         _active_sessions[session_id]["status"] = "streaming"
 
-    word_buffer = ""
     accumulated = ""
     chunks_received = 0
-    chunks_emitted = 0
 
     try:
         while True:
@@ -224,11 +137,11 @@ async def _transcription_events(
                 yield _sse_frame("status", _json.dumps(payload, ensure_ascii=False))
                 continue
 
-            # --- Chunk events: word-boundary buffering ---
+            # --- Chunk events: emit immediately ---
             chunk_text = payload  # payload is str for CHUNK
             chunks_received += 1
 
-            # Check for error marker before word-boundary processing
+            # Check for error marker
             if isinstance(chunk_text, str) and chunk_text.startswith("[ERROR]"):
                 with _session_lock:
                     if session_id in _active_sessions:
@@ -236,47 +149,22 @@ async def _transcription_events(
                 yield _sse_frame("chunk", chunk_text)
                 break
 
-            # Append to word buffer
-            word_buffer += chunk_text
-            logger.debug(
-                "[WORD-BUF] after-append len=%d preview='%s'",
-                len(word_buffer),
-                word_buffer[:80].replace("\n", "\\n"),
-            )
-
-            # Extract and emit only complete words (word + trailing whitespace,
-            # or sentence-ending punctuation followed by letter).
-            # Incomplete words at the end stay in word_buffer.
-            emit_text, word_buffer = _extract_word_chunks(word_buffer)
-
-            if emit_text:
-                chunks_emitted += 1
-                accumulated += emit_text
-                with _session_lock:
-                    if session_id in _active_sessions:
-                        _active_sessions[session_id]["accumulated_text"] = accumulated
-                yield _sse_frame("chunk", emit_text)
-                logger.debug(
-                    "[CHUNK-OUT] #%d len=%d preview='%s'",
-                    chunks_emitted,
-                    len(emit_text),
-                    emit_text[:80].replace("\n", "\\n"),
-                )
-
-        # Flush any remaining incomplete word at the end
-        if word_buffer:
-            accumulated += word_buffer
+            # Emit chunk as-is — frontend handles insertion ordering
+            accumulated += chunk_text
             with _session_lock:
                 if session_id in _active_sessions:
                     _active_sessions[session_id]["accumulated_text"] = accumulated
-            yield _sse_frame("chunk", word_buffer)
-            chunks_emitted += 1
-            logger.debug("chunk (flush): %s", word_buffer[:50])
+            yield _sse_frame("chunk", chunk_text)
+            logger.debug(
+                "[CHUNK-OUT] len=%d preview='%s'",
+                len(chunk_text),
+                chunk_text[:80].replace("\n", "\\n"),
+            )
 
         # Summary log for debugging
         logger.info(
-            "[TRANSCRIPTION-DONE] session=%s received=%d emitted=%d total_chars=%d",
-            session_id, chunks_received, chunks_emitted, len(accumulated),
+            "[TRANSCRIPTION-DONE] session=%s received=%d total_chars=%d",
+            session_id, chunks_received, len(accumulated),
         )
     except asyncio.CancelledError:
         logger.info("SSE stream cancelled for session %s", session_id)
