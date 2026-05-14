@@ -3,6 +3,10 @@ import { contextBridge, ipcRenderer } from 'electron';
 export interface AudioStatus {
   recording: boolean;
   wav_path?: string;
+  dual?: boolean;
+  mic_wav_path?: string;
+  sys_wav_path?: string;
+  error?: string;
 }
 
 export interface ElectronAPI {

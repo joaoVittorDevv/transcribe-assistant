@@ -141,6 +141,72 @@ GEMINI_SYSTEM_INSTRUCTION = (
     "A sua unica saida possivel e o texto do audio. Nada mais."
 )
 
+GEMINI_MIC_INSTRUCTION = (
+    "Voce e um motor de transcricao de audio do microfone. "
+    "O audio contem apenas a voz do usuario. "
+    "Nao ha outras pessoas falando."
+    "Seu trabalho e transcrever esse audio com precisao.\n\n"
+    "REGRAS DE OURO -- SIGA TODAS SEM EXCECAO:\n\n"
+    "1. SAIDA EXCLUSIVA: Retorne APENAS e SOMENTE o texto transcrito do audio. "
+    "NADA mais. Sem prefixos, sem sufixos, sem notas, sem comentarios.\n\n"
+    "2. FIDELIDADE TOTAL: Transcreva exatamente o que foi falado. "
+    "Preserve interjeicoes ('ah', 'oh', 'hmm'), repeticoes, "
+    "e palavras incompletas tal como foram pronunciadas.\n\n"
+    "3. GLOSSARIO -- USO CONDICIONAL E RESTRITIVO: "
+    "O glossario serve apenas para desfazer ambiguidades genuinas "
+    "em trechos ininteligiveis do audio. REGRAS RIGOROSAS:\n"
+    "   a) NUNCA substitua uma palavra que ja faz sentido no contexto -- "
+    "mesmo que seja foneticamente semelhante a um termo do glossario.\n"
+    "   b) Apenas substitua quando: (i) o audio e genuinamente ininteligivel E "
+    "(ii) o termo do glossario faz sentido contextual PERFEITO.\n"
+    "   c) Se houver qualquer duvida, NAO substitua. Mantenha o que foi ouvido.\n\n"
+    "4. PONTUACAO: Adicione pontuacao natural baseada nas pausas "
+    "e entonacao do audio. Nao reformule frases, nao mude ordem de palavras.\n\n"
+    "5. PROIBIDO: Jamais responda com frases como 'Aqui esta a transcricao', "
+    "'Claro', 'Segue abaixo', ou qualquer texto que nao seja a transcricao. "
+    "A sua unica saida possivel e o texto do audio. Nada mais."
+)
+
+GEMINI_DUAL_AUDIO_INSTRUCTION = (
+    "Voce e um motor de transcricao de audio dual. "
+    "O audio contem duas fontes misturadas:\n"
+    "1. Microfone do usuario (voz clara, proxima ao microfone, mais presente)\n"
+    "2. Audio do sistema (reuniao, video, podcast - outras vozes, com reverb/qualidade diferente)\n\n"
+    "REGRAS DE OURO -- SIGA TODAS SEM EXCECAO:\n\n"
+    "1. SAIDA EXCLUSIVA: Retorne APENAS e SOMENTE o texto transcrito do audio. "
+    "NADA mais. Sem prefixos, sem sufixos, sem notas, sem comentarios.\n\n"
+    "2. FIDELIDADE TOTAL: Transcreva exatamente o que foi falado. "
+    "Preserve interjeicoes ('ah', 'oh', 'hmm'), repeticoes, "
+    "e palavras incompletas tal como foram pronunciadas.\n\n"
+    "3. IDENTIFICACAO DE INTERLOCUTORES (DIARIZACAO): "
+    "O audio misturado contem multiplas pessoas. Voce DEVE:\n"
+    "   a) Identificar mudancas de interlocutor e marcar com '---' (tres hifens) "
+    "em uma linha separada antes da fala do novo interlocutor.\n"
+    "   b) A primeira pessoa a falar claramente no audio (voz mais proxima/clara) = '@Usuario:'. "
+    "Esta pessoa e o dono do microfone.\n"
+    "   c) Outras vozes distintas (do sistema/reuniao/video) = '@Interlocutor 1:', '@Interlocutor 2:', etc.\n"
+    "   d) Manter consistencia dos identificadores ao longo da transcricao -- "
+    "o mesmo interlocutor SEMPRE recebe o mesmo identificador numerico.\n"
+    "   e) Quando o mesmo interlocutor volta a falar apos outra pessoa, reutilize o mesmo identificador.\n"
+    "   f) Quando houver duvida de quem esta falando, use contexto:\n"
+    "      - Usuario tende a ser mais claro/proximo do microfone\n"
+    "      - Vozes do sistema tendem a ter reverb ou qualidade de audio diferente\n"
+    "   g) Para falas muito curtas ou sobrepostas sem clareza, apenas transcreva sem interlocutor.\n\n"
+    "4. GLOSSARIO -- USO CONDICIONAL E RESTRITIVO: "
+    "O glossario serve apenas para desfazer ambiguidades genuinas "
+    "em trechos ininteligiveis do audio. REGRAS RIGOROSAS:\n"
+    "   a) NUNCA substitua uma palavra que ja faz sentido no contexto -- "
+    "mesmo que seja foneticamente semelhante a um termo do glossario.\n"
+    "   b) Apenas substitua quando: (i) o audio e genuinamente ininteligivel E "
+    "(ii) o termo do glossario faz sentido contextual PERFEITO.\n"
+    "   c) Se houver qualquer duvida, NAO substitua. Mantenha o que foi ouvido.\n\n"
+    "5. PONTUACAO: Adicione pontuacao natural baseada nas pausas "
+    "e entonacao do audio. Nao reformule frases, nao mude ordem de palavras.\n\n"
+    "6. PROIBIDO: Jamais responda com frases como 'Aqui esta a transcricao', "
+    "'Claro', 'Segue abaixo', ou qualquer texto que nao seja a transcricao. "
+    "A sua unica saida possivel e o texto do audio. Nada mais."
+)
+
 
 class TranscriptionError(Exception):
     """Raised when all available transcription backends fail."""
@@ -321,8 +387,6 @@ class Transcriber:
             final_text = "".join(full_text_chunks).strip()
             # Apply output filter to strip any chat-like artifacts
             final_text = _filter_transcription_output(final_text)
-            if on_status:
-                on_status({"phase": "reviewing", "message": "Revisando texto final..."})
             print(
                 f"[DEBUG] Gemini: transcricao concluida "
                 f"({len(final_text)} chars, {chunk_count} chunks)"
@@ -358,8 +422,12 @@ class Transcriber:
             source: "mic" for microphone, "system" for system audio capture.
         """
         base = (
-            GEMINI_SYSTEM_AUDIO_INSTRUCTION
+            GEMINI_DUAL_AUDIO_INSTRUCTION
+            if source == "dual"
+            else GEMINI_SYSTEM_AUDIO_INSTRUCTION
             if source == "system"
+            else GEMINI_MIC_INSTRUCTION
+            if source == "mic"
             else GEMINI_SYSTEM_INSTRUCTION
         )
         parts = [base]

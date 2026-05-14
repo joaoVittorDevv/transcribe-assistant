@@ -87,3 +87,10 @@ DATABASE_PATH: Path = _ROOT / _optional("DATABASE_PATH", "transcriber_data.db")
 # Vault — audio file safe storage
 # ---------------------------------------------------------------------------
 VAULT_PATH: Path = _ROOT / _optional("VAULT_PATH", "Vault")
+
+# ---------------------------------------------------------------------------
+# Dual Recording - Intermediary storage
+# ---------------------------------------------------------------------------
+# Pasta para áudios do modo dual que falharam na transcrição.
+# Os áudios são preservados aqui para debugging.
+DUAL_INTERMEDIARY_PATH: Path = _ROOT / _optional("DUAL_INTERMEDIARY_PATH", "DualRecordings")

@@ -66,7 +66,7 @@ function handleReset() {
   resetActiveTab();
 }
 
-function handleModeChange(mode: 'mic' | 'system') {
+function handleModeChange(mode: 'mic' | 'system' | 'dual') {
   setMode(mode);
 }
 </script>

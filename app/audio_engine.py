@@ -30,6 +30,7 @@ from app.config import VAULT_PATH
 
 _recorder: AudioRecorder | None = None
 _active = False
+_dual_mode = False
 
 
 def _on_rms(rms: float) -> None:
@@ -40,46 +41,69 @@ def _on_rms(rms: float) -> None:
 
 
 def _start(mode: str) -> None:
-    global _recorder, _active
+    global _recorder, _active, _dual_mode
+    _dual_mode = mode == "dual"
     _recorder = AudioRecorder(on_rms_update=_on_rms)
     _recorder.start_recording(source=mode)
     _active = True
-    status = {"type": "status", "recording": True, "mode": mode}
+    status = {"type": "status", "recording": True, "mode": mode, "dual": _dual_mode}
     sys.stdout.write(json.dumps(status) + "\n")
     sys.stdout.flush()
 
 
-def _stop() -> Path | None:
-    global _active
+def _stop() -> tuple[Path, Path] | Path | None:
+    global _active, _dual_mode
     if _recorder is None:
         return None
     try:
         # Save to Vault so audio is persisted even if transcription fails
-        wav_path = _recorder.stop_recording(save_dir=VAULT_PATH)
+        result = _recorder.stop_recording(save_dir=VAULT_PATH)
     except Exception:
-        wav_path = None
+        result = None
     _active = False
-    status = {
-        "type": "status",
-        "recording": False,
-        "wav_path": str(wav_path) if wav_path else None,
-    }
+
+    if isinstance(result, tuple):
+        # Dual mode: return both paths
+        mic_path, sys_path = result
+        _dual_mode = False
+        status = {
+            "type": "status",
+            "recording": False,
+            "dual": True,
+            "mic_wav_path": str(mic_path) if mic_path else None,
+            "sys_wav_path": str(sys_path) if sys_path else None,
+        }
+    else:
+        # Single mode (mic/system): return single path
+        wav_path = result
+        _dual_mode = False
+        status = {
+            "type": "status",
+            "recording": False,
+            "dual": False,
+            "wav_path": str(wav_path) if wav_path else None,
+        }
+
     sys.stdout.write(json.dumps(status) + "\n")
     sys.stdout.flush()
-    return wav_path
+    return result
 
 
 def _cancel() -> None:
     """Stop recording and discard all audio — no WAV file is saved."""
-    global _active
+    global _active, _dual_mode
     if _recorder is None:
         return
     _recorder.discard_recording()
     _active = False
+    _dual_mode = False
     status = {
         "type": "status",
         "recording": False,
+        "dual": False,
         "wav_path": None,
+        "mic_wav_path": None,
+        "sys_wav_path": None,
     }
     sys.stdout.write(json.dumps(status) + "\n")
     sys.stdout.flush()

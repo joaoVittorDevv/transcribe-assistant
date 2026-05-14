@@ -10,11 +10,13 @@ export type TranscriptionState = 'IDLE' | 'RECORDING' | 'TRANSCRIBING';
 const state = ref<TranscriptionState>('IDLE');
 const elapsedSeconds = ref(0);
 const rmsValue = ref(0);
-let currentMode: 'mic' | 'system' = 'mic';
+let currentMode: 'mic' | 'system' | 'dual' = 'mic';
 let timerInterval: ReturnType<typeof setInterval> | null = null;
 let cleanupRms: (() => void) | null = null;
 let cleanupStatus: (() => void) | null = null;
-// Captured WAV path returned by audio_engine on stop
+// Captured WAV paths for dual mode
+let pendingWavPaths: { mic: string | null; sys: string | null; error?: string } | null = null;
+// Backward-compatible single path (non-dual modes)
 let pendingWavPath: string | null = null;
 // Resolve function for start-recording confirmation (Bug 1a fix)
 let recordingStartResolve: ((value: boolean) => void) | null = null;
@@ -33,6 +35,165 @@ export function useTranscriptionState() {
   const api = window.electronAPI as ElectronAPI;
   const { promptData } = useDefaultPrompt();
   const { selectedProvider } = useProvider();
+
+  // NOVO: Transcrição dual — envia dois arquivos separadamente
+  async function transcribeDual(paths: { mic: string | null; sys: string | null }) {
+    let micPath = paths.mic;
+    let sysPath = paths.sys;
+    // Reset editor's tracked insertion point so it re-captures cursor on first chunk
+    api.resetInsertionPoint();
+    // Create new AbortController for this transcription
+    abortController = new AbortController();
+    sessionId.value = null;
+    const { setPhase, reset: resetProgress } = useTranscriptionProgress();
+
+    // Validate paths
+    if (!micPath || !sysPath) {
+      const missing = !micPath && !sysPath ? 'ambos' : !micPath ? 'microfone' : 'sistema';
+      setPhase('error', `Erro: Falha ao capturar áudio de ${missing}.`);
+      return;
+    }
+
+    try {
+      // Read both audio files in parallel
+      const [micBuffer, sysBuffer] = await Promise.all([
+        api.readFile(micPath),
+        api.readFile(sysPath),
+      ]);
+
+      if (!micBuffer || !sysBuffer) {
+        throw new Error('Falha ao ler arquivos de áudio');
+      }
+
+      const formData = new FormData();
+      formData.append('mic_audio', new Blob([micBuffer], { type: 'audio/wav' }), 'mic.wav');
+      formData.append('sys_audio', new Blob([sysBuffer], { type: 'audio/wav' }), 'sys.wav');
+      formData.append('prompt_text', promptData.value.texto_prompt);
+      formData.append('keywords', promptData.value.keywords.join(', '));
+      formData.append('mode', 'gemini'); // Dual mode always uses Gemini
+      formData.append('source', 'dual');
+
+      console.log('[Transcription] dual mode: sending mic.wav + sys.wav to /transcribe/dual');
+
+      const response = await fetch(`http://localhost:18763/transcribe/dual`, {
+        method: 'POST',
+        body: formData,
+        signal: abortController.signal,
+      });
+
+      // Capture session ID from response headers
+      const sid = response.headers.get('X-Session-ID');
+      if (sid) sessionId.value = sid;
+
+      const reader = response.body?.getReader();
+      if (!reader) throw new Error('No response body');
+
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let chunksReceived = 0;
+      let eventType = '';
+      const dataLines: string[] = [];
+
+      const flushEvent = async (type: string, data: string): Promise<'continue' | 'return'> => {
+        if (type === 'status') {
+          try {
+            const statusPayload = JSON.parse(data);
+            const phase = statusPayload.phase as ProgressPhase;
+            const message = statusPayload.message as string | undefined;
+            if (phase === 'error') {
+              setPhase('error', message || 'Erro na transcrição');
+              return 'continue';
+            }
+            const knownPhases = new Set(PROGRESS_STEPS.map((s) => s.id));
+            if (phase && knownPhases.has(phase)) {
+              setPhase(phase, message);
+              console.debug('[Transcription] dual status:', phase, message ?? '');
+            } else if (phase) {
+              console.debug('[Transcription] dual ignoring unknown phase:', phase);
+            }
+          } catch (e) {
+            console.warn('[Transcription] dual failed to parse status event:', data);
+          }
+          return 'continue';
+        }
+        if (data === '[DONE]') {
+          console.log('[Transcription] dual completed —', chunksReceived, 'chunks received');
+          setPhase('done');
+          api.resetInsertionPoint();
+          setTimeout(() => {
+            resetProgress();
+            state.value = 'IDLE';
+            elapsedSeconds.value = 0;
+            sessionId.value = null;
+          }, 2000);
+          // Clean up dual audio files on success
+          if (micPath) api.deleteFile(micPath).catch(() => {});
+          if (sysPath) api.deleteFile(sysPath).catch(() => {});
+          return 'return';
+        }
+        if (data.startsWith('[ERROR]')) {
+          console.error('[transcription] dual error:', data);
+          const errorMsg = data.slice(7).trim() || 'Erro desconhecido na transcrição';
+          setPhase('error' as ProgressPhase, errorMsg);
+          api.resetInsertionPoint();
+          return 'return';
+        }
+        chunksReceived++;
+        console.debug('[Transcription] dual chunk #' + chunksReceived + ':', data.length, 'chars');
+        await api.insertTextAtCursor(data);
+        return 'continue';
+      };
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+        for (const line of lines) {
+          if (line === '' || line === '\r') {
+            if (dataLines.length > 0) {
+              const dataStr = dataLines.join('\n');
+              const result = await flushEvent(eventType, dataStr);
+              eventType = '';
+              dataLines.length = 0;
+              if (result === 'return') return;
+            }
+            continue;
+          }
+          if (line.startsWith('event:')) {
+            eventType = line.slice(6).trim();
+          } else if (line.startsWith('data:')) {
+            let dataContent = line.slice(5);
+            if (dataContent.startsWith(' ')) dataContent = dataContent.slice(1);
+            dataLines.push(dataContent);
+          }
+        }
+      }
+      if (dataLines.length > 0) {
+        const dataStr = dataLines.join('\n');
+        const result = await flushEvent(eventType, dataStr);
+        if (result === 'return') return;
+      }
+
+      if (!response.ok) {
+        console.error('[transcription] dual HTTP error:', response.status, response.statusText);
+        setPhase('error', `Erro HTTP ${response.status}: ${response.statusText}`);
+        return;
+      }
+    } catch (err: any) {
+      if (err?.name === 'AbortError') {
+        console.log('[transcription] dual fetch aborted by user');
+        return;
+      }
+      console.error('[transcription] dual error:', err);
+      const errMsg = err?.message || 'Erro desconhecido';
+      // Preserve audio paths in error message for debugging
+      setPhase('error', `Erro na transcrição: ${errMsg}\n\nÁudios preservados em:\n• Mic: ${micPath}\n• Sys: ${sysPath}`);
+      return;
+    }
+    setPhase('error', 'Conexão perdida com o servidor de transcrição.');
+  }
 
   async function transcribeFile(wavPath: string) {
     let accumulated = '';
@@ -55,6 +216,9 @@ export function useTranscriptionState() {
       if (currentMode === 'system') {
         // System audio always uses Google Gemini
         transcriptionMode = 'gemini';
+      } else if (currentMode === 'dual') {
+        // Dual mode uses Gemini for diarization (speaker identification)
+        transcriptionMode = 'gemini';
       } else {
         // Mic audio respects user provider selection
         switch (selectedProvider.value) {
@@ -73,6 +237,11 @@ export function useTranscriptionState() {
       console.log('[Transcription] mode:', transcriptionMode, '| source:', currentMode, '| provider:', selectedProvider.value);
       formData.append('mode', transcriptionMode);
       formData.append('source', currentMode);
+
+      // Dual mode uses Gemini for diarization — log hint for transparency
+      if (currentMode === 'dual') {
+        console.log('[Transcription] dual mode: forcing Gemini for speaker diarization');
+      }
 
       const response = await fetch(`http://localhost:18763/transcribe`, {
         method: 'POST',
@@ -211,6 +380,7 @@ export function useTranscriptionState() {
 
   async function startRecording() {
     pendingWavPath = null;
+    pendingWavPaths = null;
     elapsedSeconds.value = 0;
 
     // Bug 1a fix: wait for audio engine to confirm recording started
@@ -251,15 +421,26 @@ export function useTranscriptionState() {
     let phaseTwoTimeout: ReturnType<typeof setTimeout> | null = null;
     let phaseThreeTimeout: ReturnType<typeof setTimeout> | null = null;
 
-    // Poll every 50ms for the WAV path.
+    // Poll every 50ms for the WAV path(s).
     // On arrival: cancel all timeouts, clear status, start transcription.
     wavCheckInterval = setInterval(() => {
+      // Dual mode: two paths available
+      if (pendingWavPaths && !wavGenerationTimedOut) {
+        clearInterval(wavCheckInterval!);
+        wavCheckInterval = null;
+        if (phaseTwoTimeout) clearTimeout(phaseTwoTimeout);
+        if (phaseThreeTimeout) clearTimeout(phaseThreeTimeout);
+        statusMessage.value = '';
+        transcribeDual(pendingWavPaths);
+        pendingWavPaths = null;
+        return;
+      }
+      // Single mode (backward compatible)
       if (pendingWavPath && !wavGenerationTimedOut) {
         clearInterval(wavCheckInterval!);
         wavCheckInterval = null;
         if (phaseTwoTimeout) clearTimeout(phaseTwoTimeout);
         if (phaseThreeTimeout) clearTimeout(phaseThreeTimeout);
-        // Clear any "waiting" message from phase 2
         statusMessage.value = '';
         transcribeFile(pendingWavPath);
         pendingWavPath = null;
@@ -268,7 +449,7 @@ export function useTranscriptionState() {
 
     // Phase 2 (5 s): gravação longa — mostra feedback mas continua esperando
     phaseTwoTimeout = setTimeout(() => {
-      if (state.value === 'TRANSCRIBING' && !pendingWavPath) {
+      if (state.value === 'TRANSCRIBING' && !pendingWavPaths && !pendingWavPath) {
         statusMessage.value = 'Finalizando gravação longa…';
         console.log('[transcription] WAV generation taking longer than 5s — still waiting');
       }
@@ -285,6 +466,7 @@ export function useTranscriptionState() {
         wavGenerationTimedOut = true;
         setPhase('error', 'Timeout: gravação não finalizou a tempo. Tente novamente.');
         pendingWavPath = null;
+        pendingWavPaths = null;
       }
     }, 30000);
   }
@@ -307,6 +489,7 @@ export function useTranscriptionState() {
       elapsedSeconds.value = 0;
       rmsValue.value = 0;
       pendingWavPath = null;
+      pendingWavPaths = null;
       resetProgress();
     } else if (state.value === 'TRANSCRIBING') {
       // Cancel transcription: abort in-flight fetch + notify server
@@ -322,7 +505,11 @@ export function useTranscriptionState() {
         wavCheckInterval = null;
       }
       // Clean up Vault WAV file if we have one
-      if (pendingWavPath) {
+      if (pendingWavPaths) {
+        if (pendingWavPaths.mic) api.deleteFile(pendingWavPaths.mic).catch(() => {});
+        if (pendingWavPaths.sys) api.deleteFile(pendingWavPaths.sys).catch(() => {});
+        pendingWavPaths = null;
+      } else if (pendingWavPath) {
         api.deleteFile(pendingWavPath).catch(() => {});
         pendingWavPath = null;
       }
@@ -333,7 +520,7 @@ export function useTranscriptionState() {
     }
   }
 
-  function setMode(mode: 'mic' | 'system') {
+  function setMode(mode: 'mic' | 'system' | 'dual') {
     currentMode = mode;
   }
 
@@ -347,9 +534,21 @@ export function useTranscriptionState() {
       recordingStartResolve(true);
       recordingStartResolve = null;
     }
-    // Only set wav_path if timeout hasn't expired (race condition fix)
-    if (!status.recording && status.wav_path && !wavGenerationTimedOut) {
-      pendingWavPath = status.wav_path;
+    // Only process wav paths if timeout hasn't expired (race condition fix)
+    if (!status.recording && !wavGenerationTimedOut) {
+      if (status.dual) {
+        // Dual mode: two separate paths
+        pendingWavPaths = {
+          mic: status.mic_wav_path ?? null,
+          sys: status.sys_wav_path ?? null,
+          error: status.error,
+        };
+        pendingWavPath = null;
+      } else if (status.wav_path) {
+        // Single mode: backward compatible
+        pendingWavPath = status.wav_path;
+        pendingWavPaths = null;
+      }
     }
   });
 
