@@ -33,7 +33,7 @@ def make_silent_wav() -> io.BytesIO:
 async def test_transcribe_endpoint_returns_sse_media_type():
     """POST /transcribe must return a StreamingResponse with text/event-stream."""
     # Mock the transcriber to avoid slow/real transcription
-    async def mock_transcribe_events(session_id, audio_path, prompt_text, keywords, mode):
+    async def mock_transcribe_events(*args, **kwargs):
         from app.server import _sse_frame
         yield _sse_frame("chunk", "test chunk")
         yield _sse_frame("chunk", "[DONE]")

@@ -12,6 +12,7 @@ export interface ElectronAPI {
   onRmsUpdate(callback: (value: number) => void): () => void;
   onAudioStatus(callback: (status: AudioStatus) => void): () => void;
   openFilePicker(accept: string[]): Promise<string | null>;
+  openDirectoryPicker(): Promise<string | null>;
   readFile(path: string): Promise<ArrayBuffer | null>;
   deleteFile(path: string): Promise<boolean>;
   insertTextAtCursor(text: string): Promise<boolean>;

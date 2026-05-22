@@ -149,6 +149,14 @@ function setupIpcHandlers(): void {
     return result.canceled ? null : result.filePaths[0];
   });
 
+  ipcMain.handle('open-directory-dialog', async () => {
+    if (!mainWindow) return null;
+    const result = await dialog.showOpenDialog(mainWindow, {
+      properties: ['openDirectory'],
+    });
+    return result.canceled ? null : result.filePaths[0];
+  });
+
   ipcMain.handle('read-file', async (_event, filePath: string) => {
     try {
       const data = fs.readFileSync(filePath);

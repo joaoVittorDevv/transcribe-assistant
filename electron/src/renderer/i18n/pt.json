@@ -47,5 +47,22 @@
   "progress.step.streaming": "Streaming",
   "progress.step.reviewing": "Revisando",
   "progress.step.done": "Pronto",
-  "progress.default_message": "Preparando transcrição..."
+  "progress.default_message": "Preparando transcrição...",
+  "settings.tabs.prompt": "Prompt do Sistema",
+  "settings.tabs.general": "Configurações Gerais",
+  "settings.gemini_key": "Chave API Google Gemini",
+  "settings.gemini_model": "Modelo Gemini",
+  "settings.groq_key": "Chave API Groq",
+  "settings.groq_model": "Modelo Groq",
+  "settings.fetch_models": "Buscar Modelos",
+  "settings.fetching": "Buscando...",
+  "settings.vault_path": "Diretório do Vault",
+  "settings.dual_path": "Diretório de Gravações Dual",
+  "settings.select_dir": "Selecionar...",
+  "settings.network": "Configurações de Rede",
+  "settings.host": "Host da API",
+  "settings.port": "Porta da API",
+  "settings.check_interval": "Intervalo de Checagem (ms)",
+  "settings.language": "Idioma Global",
+  "settings.save_success": "Configurações salvas!"
 }

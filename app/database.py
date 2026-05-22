@@ -14,8 +14,6 @@ from contextlib import contextmanager
 from datetime import datetime
 from typing import Generator
 
-from app.config import DATABASE_PATH
-
 # ---------------------------------------------------------------------------
 # Connection helper
 # ---------------------------------------------------------------------------
@@ -24,6 +22,7 @@ from app.config import DATABASE_PATH
 @contextmanager
 def _connect() -> Generator[sqlite3.Connection, None, None]:
     """Yield a database connection with row_factory and foreign key support."""
+    from app.config import DATABASE_PATH
     conn = sqlite3.connect(DATABASE_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
@@ -46,6 +45,11 @@ def initialize_db() -> None:
     """Create all tables if they do not exist yet."""
     with _connect() as conn:
         conn.executescript("""
+            CREATE TABLE IF NOT EXISTS settings (
+                chave TEXT PRIMARY KEY,
+                valor TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS prompts (
                 id           INTEGER PRIMARY KEY AUTOINCREMENT,
                 nome         TEXT    NOT NULL,
@@ -273,3 +277,36 @@ def delete_session(session_id: int) -> None:
     """Delete a session from the database."""
     with _connect() as conn:
         conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+
+
+# ---------------------------------------------------------------------------
+# Settings CRUD
+# ---------------------------------------------------------------------------
+
+
+def get_setting(chave: str, default: str = None) -> str | None:
+    """Return a configuration value from the database, or default if not found."""
+    try:
+        with _connect() as conn:
+            row = conn.execute(
+                "SELECT valor FROM settings WHERE chave = ?", (chave,)
+            ).fetchone()
+            return row["valor"] if row else default
+    except sqlite3.OperationalError:
+        # Table might not exist yet during initial setup/migration
+        return default
+
+
+def set_setting(chave: str, valor: str) -> None:
+    """Insert or update a configuration value in the database."""
+    with _connect() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO settings (chave, valor) VALUES (?, ?)",
+            (chave, str(valor)),
+        )
+
+
+def delete_setting(chave: str) -> None:
+    """Remove a configuration key from the database."""
+    with _connect() as conn:
+        conn.execute("DELETE FROM settings WHERE chave = ?", (chave,))

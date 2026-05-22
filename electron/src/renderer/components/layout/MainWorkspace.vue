@@ -24,8 +24,8 @@
       <BottomActionBar />
     </div>
 
-    <!-- Prompt Settings Modal -->
-    <PromptModal :visible="showSettings" @close="showSettings = false" />
+    <!-- Settings Modal (Abas: Prompt e Configurações Gerais) -->
+    <SettingsModal :visible="showSettings" @close="showSettings = false" />
   </div>
 </template>
 
@@ -38,7 +38,7 @@ import TopActionButtons from '../topbar/TopActionButtons.vue';
 import TabBar from '../tabs/TabBar.vue';
 import TextEditor from '../editor/TextEditor.vue';
 import BottomActionBar from '../bottom/BottomActionBar.vue';
-import PromptModal from '../prompt/PromptModal.vue';
+import SettingsModal from '../settings/SettingsModal.vue';
 
 const showSettings = ref(false);
 </script>

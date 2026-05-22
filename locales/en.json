@@ -75,6 +75,30 @@
                 "add_keyword_placeholder": "Add word...",
                 "error_empty_name": "Prompt name cannot be empty."
             },
+            "settings": {
+                "title": "Application Settings",
+                "gemini_section": "Google Gemini (Transcription)",
+                "api_key_label": "Gemini API Key",
+                "model_label": "Transcription Model",
+                "fetch_models_btn": "Fetch Models",
+                "groq_section": "Groq (Review & Whisper)",
+                "groq_model_label": "Review Model",
+                "network_section": "Network Monitor",
+                "network_host_label": "Ping Host",
+                "network_port_label": "Ping Port",
+                "network_interval_label": "Check Interval (seconds)",
+                "general_section": "General & Folders",
+                "lang_label": "App Language",
+                "vault_path_label": "Vault Folder",
+                "dual_path_label": "Temporary Recordings Folder",
+                "save_success": "✓ Settings saved successfully!",
+                "save_error": "Error saving settings.",
+                "fetch_success": "✓ Models updated successfully!",
+                "fetch_error": "Error fetching models from APIs.",
+                "fetch_loading": "Fetching...",
+                "show_key": "👁",
+                "hide_key": "🔒"
+            },
             "file_dialog": {
                 "title": "Select audio file",
                 "audio_files": "Audio files"

@@ -655,6 +655,175 @@ async def update_default_prompt(body: PromptUpdateRequest):
     )
 
 
+# ---------------------------------------------------------------------------
+# Settings Management
+# ---------------------------------------------------------------------------
+
+class SettingsResponse(PydanticBaseModel):
+    gemini_key_configured: bool
+    gemini_key_masked: str
+    gemini_model: str
+    groq_key_configured: bool
+    groq_key_masked: str
+    groq_review_model: str
+    app_language: str
+    vault_path: str
+    dual_intermediary_path: str
+    network_ping_host: str
+    network_ping_port: int
+    network_check_interval: int
+
+
+class SettingsUpdateRequest(PydanticBaseModel):
+    gemini_key: str | None = None
+    gemini_model: str | None = None
+    groq_key: str | None = None
+    groq_review_model: str | None = None
+    app_language: str | None = None
+    vault_path: str | None = None
+    dual_intermediary_path: str | None = None
+    network_ping_host: str | None = None
+    network_ping_port: int | None = None
+    network_check_interval: int | None = None
+
+
+class FetchModelsRequest(PydanticBaseModel):
+    gemini_key: str | None = None
+    groq_key: str | None = None
+
+
+class FetchModelsResponse(PydanticBaseModel):
+    gemini_models: list[str]
+    groq_models: list[str]
+
+
+def _get_masked_key(key: str) -> str:
+    if not key:
+        return ""
+    if len(key) <= 8:
+        return "********"
+    return f"{key[:6]}...{key[-4:]}"
+
+
+@app.get("/settings", response_model=SettingsResponse)
+async def get_settings():
+    """GET /settings — Retrieve current application configurations with masked keys."""
+    import app.config as config
+    config.load_all_settings()
+    return SettingsResponse(
+        gemini_key_configured=bool(config.GOOGLE_API_KEY),
+        gemini_key_masked=_get_masked_key(config.GOOGLE_API_KEY),
+        gemini_model=config.GEMINI_MODEL,
+        groq_key_configured=bool(config.GROQ_API_KEY),
+        groq_key_masked=_get_masked_key(config.GROQ_API_KEY),
+        groq_review_model=config.GROQ_REVIEW_MODEL,
+        app_language=config.APP_LANGUAGE,
+        vault_path=str(config.VAULT_PATH),
+        dual_intermediary_path=str(config.DUAL_INTERMEDIARY_PATH),
+        network_ping_host=config.NETWORK_PING_HOST,
+        network_ping_port=config.NETWORK_PING_PORT,
+        network_check_interval=config.NETWORK_CHECK_INTERVAL,
+    )
+
+
+@app.put("/settings", response_model=CancelResponse)
+async def update_settings(body: SettingsUpdateRequest):
+    """PUT /settings — Update application configurations, encrypting keys if updated."""
+    import app.config as config
+    import app.database as db
+    import app.security as sec
+
+    # Read current keys to handle masking logic
+    config.load_all_settings()
+
+    # 1. Gemini Key
+    if body.gemini_key is not None:
+        gkey = body.gemini_key.strip()
+        if "..." in gkey or "********" in gkey or (len(gkey) > 0 and gkey.endswith("XXXX")):
+            pass
+        elif gkey == "":
+            db.set_setting("GOOGLE_API_KEY", "")
+        else:
+            db.set_setting("GOOGLE_API_KEY", sec.encrypt_value(gkey))
+
+    # 2. Gemini Model
+    if body.gemini_model is not None:
+        db.set_setting("GEMINI_MODEL", body.gemini_model.strip())
+
+    # 3. Groq Key
+    if body.groq_key is not None:
+        gqkey = body.groq_key.strip()
+        if "..." in gqkey or "********" in gqkey or (len(gqkey) > 0 and gqkey.endswith("XXXX")):
+            pass
+        elif gqkey == "":
+            db.set_setting("GROQ_API_KEY", "")
+        else:
+            db.set_setting("GROQ_API_KEY", sec.encrypt_value(gqkey))
+
+    # 4. Groq Review Model
+    if body.groq_review_model is not None:
+        db.set_setting("GROQ_REVIEW_MODEL", body.groq_review_model.strip())
+
+    # 5. Language
+    if body.app_language is not None:
+        db.set_setting("APP_LANGUAGE", body.app_language.strip())
+
+    # 6. Paths
+    if body.vault_path is not None:
+        db.set_setting("VAULT_PATH", body.vault_path.strip())
+    if body.dual_intermediary_path is not None:
+        db.set_setting("DUAL_INTERMEDIARY_PATH", body.dual_intermediary_path.strip())
+
+    # 7. Network
+    if body.network_ping_host is not None:
+        db.set_setting("NETWORK_PING_HOST", body.network_ping_host.strip())
+    if body.network_ping_port is not None:
+        db.set_setting("NETWORK_PING_PORT", str(body.network_ping_port))
+    if body.network_check_interval is not None:
+        db.set_setting("NETWORK_CHECK_INTERVAL", str(body.network_check_interval))
+
+    # Propagate changes to config in-memory globals
+    config.reload_config()
+
+    return CancelResponse(ok=True, message="Configurações salvas com sucesso")
+
+
+@app.post("/settings/models", response_model=FetchModelsResponse)
+async def fetch_models(body: FetchModelsRequest):
+    """POST /settings/models — Dynamically fetch models available for Gemini and Groq."""
+    import app.config as config
+    from app.models_fetcher import fetch_gemini_models, fetch_groq_models
+
+    config.load_all_settings()
+
+    # Determine Gemini Key
+    gemini_key = body.gemini_key
+    if gemini_key is not None:
+        gemini_key = gemini_key.strip()
+        if "..." in gemini_key or "********" in gemini_key or gemini_key == "":
+            gemini_key = config.GOOGLE_API_KEY
+    else:
+        gemini_key = config.GOOGLE_API_KEY
+
+    # Determine Groq Key
+    groq_key = body.groq_key
+    if groq_key is not None:
+        groq_key = groq_key.strip()
+        if "..." in groq_key or "********" in groq_key or groq_key == "":
+            groq_key = config.GROQ_API_KEY
+    else:
+        groq_key = config.GROQ_API_KEY
+
+    # Fetch models
+    gemini_list = fetch_gemini_models(gemini_key)
+    groq_list = fetch_groq_models(groq_key)
+
+    return FetchModelsResponse(
+        gemini_models=gemini_list,
+        groq_models=groq_list
+    )
+
+
 # Allow `python -m app.server` or `uvicorn app.server:app`
 if __name__ == "__main__":
     import uvicorn

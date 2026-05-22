@@ -47,5 +47,22 @@
   "progress.step.streaming": "Streaming",
   "progress.step.reviewing": "Reviewing",
   "progress.step.done": "Done",
-  "progress.default_message": "Preparing transcription..."
+  "progress.default_message": "Preparing transcription...",
+  "settings.tabs.prompt": "System Prompt",
+  "settings.tabs.general": "General Settings",
+  "settings.gemini_key": "Google Gemini API Key",
+  "settings.gemini_model": "Gemini Model",
+  "settings.groq_key": "Groq API Key",
+  "settings.groq_model": "Groq Model",
+  "settings.fetch_models": "Fetch Models",
+  "settings.fetching": "Fetching...",
+  "settings.vault_path": "Vault Directory",
+  "settings.dual_path": "Dual Recordings Directory",
+  "settings.select_dir": "Select...",
+  "settings.network": "Network Settings",
+  "settings.host": "API Host",
+  "settings.port": "API Port",
+  "settings.check_interval": "Check Interval (ms)",
+  "settings.language": "Global Language",
+  "settings.save_success": "Settings saved!"
 }

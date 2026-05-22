@@ -104,6 +104,11 @@ class MainWindow(ctk.CTk):
         self._poll_ui_queue()
         self._poll_rms_queue()
 
+        # --- Check for API keys and prompt settings if missing ---
+        from app.config import GOOGLE_API_KEY, GROQ_API_KEY
+        if not GOOGLE_API_KEY or not GROQ_API_KEY:
+            self.after(500, self._open_settings)
+
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     # ==================================================================
@@ -197,6 +202,26 @@ class MainWindow(ctk.CTk):
         self._import_tooltip = _Tooltip(
             self._import_btn,
             text_fn=lambda: i18n.t("ui.buttons.import_audio"),
+        )
+
+        # Settings icon button (discrete, no label)
+        self._settings_btn = ctk.CTkButton(
+            status_frame,
+            text="⚙",
+            width=36,
+            height=36,
+            font=("", 18),
+            fg_color="transparent",
+            hover_color=("gray75", "gray30"),
+            corner_radius=8,
+            command=self._open_settings,
+        )
+        self._settings_btn.pack(side="left", padx=(0, 6))
+
+        # Tooltip for settings button
+        self._settings_tooltip = _Tooltip(
+            self._settings_btn,
+            text_fn=lambda: i18n.t("ui.settings.title"),
         )
 
         self._history_btn = ctk.CTkButton(
@@ -992,6 +1017,20 @@ class MainWindow(ctk.CTk):
 
     def _open_history(self) -> None:
         HistoryWindow(self, on_restore=self._restore_session)
+
+    def _open_settings(self) -> None:
+        """Open the application settings modal window."""
+        from app.ui.settings_modal import SettingsModal
+
+        if hasattr(self, "_settings_modal") and self._settings_modal and self._settings_modal.winfo_exists():
+            self._settings_modal.focus()
+            return
+
+        self._settings_modal = SettingsModal(self, on_saved=self._on_settings_saved)
+
+    def _on_settings_saved(self) -> None:
+        """Refresh labels when settings are saved."""
+        self.refresh_labels()
 
     # ==================================================================
     # Audio file import
