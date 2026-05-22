@@ -384,8 +384,20 @@ onMounted(() => {
   // - Inserts at tracked index (NOT re-reading cursor each time)
   // - Advances index by chunk length
   // - Moves cursor to end of inserted text
-  cleanupInsertText = api.onInsertText((text: string) => {
+  cleanupInsertText = api.onInsertText((payload: { text: string; tabId?: string }) => {
     if (!quill) return;
+
+    const { text, tabId } = payload;
+
+    // If tabId is specified and doesn't match active tab, buffer into tab store
+    if (tabId && tabId !== activeTabId.value) {
+      const { tabs } = useTabs();
+      const targetTab = tabs.find(t => t.id === tabId);
+      if (targetTab) {
+        updateContent(tabId, targetTab.content + text);
+      }
+      return;
+    }
 
     // Initialize insertion point from current cursor on first chunk
     if (transcriptionInsertIndex === null) {
@@ -415,8 +427,8 @@ onMounted(() => {
     transcriptionInsertIndex = null;
   });
 
-  // Register editor API (clear + markdown export)
-  registerEditor({ clearEditor, getMarkdown: quillToMarkdown });
+  // Register editor API (clear + markdown export + undo)
+  registerEditor({ clearEditor, getMarkdown: quillToMarkdown, undo: undoEditor });
 
   // Ctrl+F / Escape find bar keyboard handler
   document.addEventListener('keydown', onEditorKeydown);
@@ -454,10 +466,17 @@ function handleFormat(type: string, value?: string | boolean | number) {
 
 function clearEditor() {
   if (!quill) return;
-  quill.setText('');
+  // Use 'user' source so the operation is recorded in Quill's history stack,
+  // enabling undo via Ctrl+Z or the programmatic undo() call.
+  quill.setText('', 'user');
 }
 
-defineExpose({ clearEditor, getMarkdown: quillToMarkdown });
+function undoEditor() {
+  if (!quill) return;
+  quill.history.undo();
+}
+
+defineExpose({ clearEditor, getMarkdown: quillToMarkdown, undo: undoEditor });
 </script>
 
 <style>

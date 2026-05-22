@@ -44,9 +44,14 @@ def _start(mode: str) -> None:
     global _recorder, _active, _dual_mode
     _dual_mode = mode == "dual"
     _recorder = AudioRecorder(on_rms_update=_on_rms)
-    _recorder.start_recording(source=mode)
-    _active = True
-    status = {"type": "status", "recording": True, "mode": mode, "dual": _dual_mode}
+    try:
+        _recorder.start_recording(source=mode)
+        _active = True
+        status = {"type": "status", "recording": True, "mode": mode, "dual": _dual_mode}
+    except Exception as exc:
+        _active = False
+        _dual_mode = False
+        status = {"type": "status", "recording": False, "dual": False, "error": str(exc)}
     sys.stdout.write(json.dumps(status) + "\n")
     sys.stdout.flush()
 

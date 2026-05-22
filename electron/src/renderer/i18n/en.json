@@ -64,5 +64,7 @@
   "settings.port": "API Port",
   "settings.check_interval": "Check Interval (ms)",
   "settings.language": "Global Language",
-  "settings.save_success": "Settings saved!"
+  "settings.save_success": "Settings saved!",
+  "toast.content_cleared": "Tab content cleared.",
+  "toast.undo": "Undo"
 }

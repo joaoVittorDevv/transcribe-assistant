@@ -19,64 +19,16 @@
 
 <script setup lang="ts">
 import { t } from '../../i18n';
-import { useTabs } from '../../composables/useTabs';
-import { useDefaultPrompt } from '../../composables/useDefaultPrompt';
+import { useTranscriptionState } from '../../composables/useTranscriptionState';
 
 const emit = defineEmits<{
   'open-settings': [];
 }>();
 
-const { activeTabId, updateContent } = useTabs();
-const { promptData } = useDefaultPrompt();
+const { importAndTranscribe } = useTranscriptionState();
 
-async function importAudio() {
-  const filePath = await window.electronAPI.openFilePicker(['mp3', 'wav']);
-  if (!filePath) return;
-
-  const arrayBuffer = await window.electronAPI.readFile(filePath);
-  if (!arrayBuffer) return;
-
-  const ext = filePath.split('.').pop()?.toLowerCase() ?? 'wav';
-  const mimeType = ext === 'mp3' ? 'audio/mpeg' : 'audio/wav';
-  const blob = new Blob([arrayBuffer], { type: mimeType });
-  const form = new FormData();
-  form.append('audio', blob, filePath.split('/').pop() ?? 'audio');
-  form.append('prompt_text', promptData.value.texto_prompt);
-  form.append('keywords', promptData.value.keywords.join(', '));
-  // Imported files always use Google Gemini (like system audio)
-  form.append('mode', 'gemini');
-  form.append('source', 'import');
-
-  const res = await fetch('http://localhost:18763/transcribe', {
-    method: 'POST',
-    body: form,
-  });
-  if (!res.body) return;
-
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-  let accumulated = '';
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split('\n');
-    buffer = lines.pop() ?? '';
-    for (const line of lines) {
-      if (!line.startsWith('data:')) continue;
-      // Extract payload preserving trailing whitespace (backend controls word spacing)
-      let text = line.slice(5);
-      if (text.startsWith(' ')) text = text.slice(1);
-      if (text === '[DONE]') {
-        updateContent(activeTabId.value, accumulated);
-        return;
-      }
-      if (!text.startsWith('[ERROR]')) {
-        accumulated += text;
-      }
-    }
-  }
-  updateContent(activeTabId.value, accumulated);
+function importAudio() {
+  importAndTranscribe();
 }
 </script>
+

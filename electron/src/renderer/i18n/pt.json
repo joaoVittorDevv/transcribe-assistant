@@ -64,5 +64,7 @@
   "settings.port": "Porta da API",
   "settings.check_interval": "Intervalo de Checagem (ms)",
   "settings.language": "Idioma Global",
-  "settings.save_success": "Configurações salvas!"
+  "settings.save_success": "Configurações salvas!",
+  "toast.content_cleared": "Conteúdo da aba limpo.",
+  "toast.undo": "Desfazer"
 }

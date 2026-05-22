@@ -169,8 +169,8 @@ function setupIpcHandlers(): void {
 
   // Use ipcMain.on (fire-and-forget) instead of handle to reduce latency
   // for text insertion. No response needed — just forward to renderer.
-  ipcMain.on('insert-text-at-cursor', (_event, text: string) => {
-    mainWindow?.webContents.send('insert-text', text);
+  ipcMain.on('insert-text-at-cursor', (_event, payload: { text: string; tabId?: string }) => {
+    mainWindow?.webContents.send('insert-text', payload);
   });
 
   // Reset insertion point — signals editor to re-capture cursor on next chunk

@@ -3,6 +3,7 @@ import { ref } from 'vue';
 interface EditorAPI {
   clearEditor: () => void;
   getMarkdown: () => string;
+  undo: () => void;
 }
 
 const editorRef = ref<EditorAPI | null>(null);
@@ -20,5 +21,9 @@ export function useEditor() {
     return editorRef.value?.getMarkdown() ?? '';
   }
 
-  return { editorRef, registerEditor, clearEditor, getMarkdown };
+  function undo() {
+    editorRef.value?.undo();
+  }
+
+  return { editorRef, registerEditor, clearEditor, getMarkdown, undo };
 }

@@ -31,7 +31,7 @@ let wavGenerationTimedOut = false;
 let wavCheckInterval: ReturnType<typeof setInterval> | null = null;
 
 export function useTranscriptionState() {
-  const { activeTabId, updateContent } = useTabs();
+  const { activeTabId } = useTabs();
   const api = window.electronAPI as ElectronAPI;
   const { promptData } = useDefaultPrompt();
   const { selectedProvider } = useProvider();
@@ -40,6 +40,8 @@ export function useTranscriptionState() {
   async function transcribeDual(paths: { mic: string | null; sys: string | null }) {
     let micPath = paths.mic;
     let sysPath = paths.sys;
+    // Capture target tab so streaming goes to the correct tab even if user switches
+    const targetTabId = activeTabId.value;
     // Reset editor's tracked insertion point so it re-captures cursor on first chunk
     api.resetInsertionPoint();
     // Create new AbortController for this transcription
@@ -140,7 +142,7 @@ export function useTranscriptionState() {
         }
         chunksReceived++;
         console.debug('[Transcription] dual chunk #' + chunksReceived + ':', data.length, 'chars');
-        await api.insertTextAtCursor(data);
+        await api.insertTextAtCursor(data, targetTabId);
         return 'continue';
       };
 
@@ -196,7 +198,8 @@ export function useTranscriptionState() {
   }
 
   async function transcribeFile(wavPath: string) {
-    let accumulated = '';
+    // Capture target tab so streaming goes to the correct tab even if user switches
+    const targetTabId = activeTabId.value;
     // Reset editor’s tracked insertion point so it re-captures cursor on first chunk
     api.resetInsertionPoint();
     // Create new AbortController for this transcription
@@ -319,7 +322,7 @@ export function useTranscriptionState() {
         // Server sends raw text chunks (not JSON) — insert directly
         chunksReceived++;
         console.debug('[Transcription] chunk #' + chunksReceived + ':', data.length, 'chars');
-        await api.insertTextAtCursor(data);
+        await api.insertTextAtCursor(data, targetTabId);
         return 'continue';
       }
 
@@ -529,6 +532,24 @@ export function useTranscriptionState() {
   });
 
   cleanupStatus = api.onAudioStatus((status) => {
+    // Handle engine startup or recording failure (e.g. audio device busy)
+    if (!status.recording && status.error) {
+      if (recordingStartResolve) {
+        recordingStartResolve(false);
+        recordingStartResolve = null;
+      }
+      state.value = 'IDLE';
+      elapsedSeconds.value = 0;
+      rmsValue.value = 0;
+      if (timerInterval) {
+        clearInterval(timerInterval);
+        timerInterval = null;
+      }
+      const { setPhase } = useTranscriptionProgress();
+      setPhase('error', `Erro no dispositivo de áudio: ${status.error}`);
+      return;
+    }
+
     // Bug 1a fix: resolve start-recording promise when engine confirms
     if (status.recording && recordingStartResolve) {
       recordingStartResolve(true);
@@ -559,6 +580,147 @@ export function useTranscriptionState() {
     cleanupStatus?.();
   });
 
+  // Import audio file and transcribe with unified progress bar
+  async function importAndTranscribe() {
+    if (state.value !== 'IDLE') return;
+
+    const filePath = await api.openFilePicker(['mp3', 'wav']);
+    if (!filePath) return;
+
+    const arrayBuffer = await api.readFile(filePath);
+    if (!arrayBuffer) return;
+
+    // Capture target tab before async work begins
+    const targetTabId = activeTabId.value;
+
+    state.value = 'TRANSCRIBING';
+    api.resetInsertionPoint();
+    abortController = new AbortController();
+    sessionId.value = null;
+    const { setPhase, reset: resetProgress } = useTranscriptionProgress();
+
+    try {
+      const ext = filePath.split('.').pop()?.toLowerCase() ?? 'wav';
+      const mimeType = ext === 'mp3' ? 'audio/mpeg' : 'audio/wav';
+      const blob = new Blob([arrayBuffer], { type: mimeType });
+      const formData = new FormData();
+      formData.append('audio', blob, filePath.split('/').pop() ?? 'audio');
+      formData.append('prompt_text', promptData.value.texto_prompt);
+      formData.append('keywords', promptData.value.keywords.join(', '));
+      // Imported files always use Google Gemini
+      formData.append('mode', 'gemini');
+      formData.append('source', 'import');
+
+      const response = await fetch('http://localhost:18763/transcribe', {
+        method: 'POST',
+        body: formData,
+        signal: abortController.signal,
+      });
+
+      // Capture session ID from response headers
+      const sid = response.headers.get('X-Session-ID');
+      if (sid) sessionId.value = sid;
+
+      const reader = response.body?.getReader();
+      if (!reader) throw new Error('No response body');
+
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let chunksReceived = 0;
+      let eventType = '';
+      const dataLines: string[] = [];
+
+      const flushEvent = async (type: string, data: string): Promise<'continue' | 'return'> => {
+        if (type === 'status') {
+          try {
+            const statusPayload = JSON.parse(data);
+            const phase = statusPayload.phase as ProgressPhase;
+            const message = statusPayload.message as string | undefined;
+            if (phase === 'error') {
+              setPhase('error', message || 'Erro na transcrição');
+              return 'continue';
+            }
+            const knownPhases = new Set(PROGRESS_STEPS.map((s) => s.id));
+            if (phase && knownPhases.has(phase)) {
+              setPhase(phase, message);
+            }
+          } catch (e) {
+            console.warn('[Transcription] import: failed to parse status event:', data);
+          }
+          return 'continue';
+        }
+        if (data === '[DONE]') {
+          console.log('[Transcription] import completed —', chunksReceived, 'chunks received');
+          setPhase('done');
+          api.resetInsertionPoint();
+          setTimeout(() => {
+            resetProgress();
+            state.value = 'IDLE';
+            elapsedSeconds.value = 0;
+            sessionId.value = null;
+          }, 2000);
+          return 'return';
+        }
+        if (data.startsWith('[ERROR]')) {
+          console.error('[transcription] import error:', data);
+          const errorMsg = data.slice(7).trim() || 'Erro desconhecido na transcrição';
+          setPhase('error' as ProgressPhase, errorMsg);
+          api.resetInsertionPoint();
+          return 'return';
+        }
+        chunksReceived++;
+        await api.insertTextAtCursor(data, targetTabId);
+        return 'continue';
+      };
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+        for (const line of lines) {
+          if (line === '' || line === '\r') {
+            if (dataLines.length > 0) {
+              const dataStr = dataLines.join('\n');
+              const result = await flushEvent(eventType, dataStr);
+              eventType = '';
+              dataLines.length = 0;
+              if (result === 'return') return;
+            }
+            continue;
+          }
+          if (line.startsWith('event:')) {
+            eventType = line.slice(6).trim();
+          } else if (line.startsWith('data:')) {
+            let dataContent = line.slice(5);
+            if (dataContent.startsWith(' ')) dataContent = dataContent.slice(1);
+            dataLines.push(dataContent);
+          }
+        }
+      }
+      if (dataLines.length > 0) {
+        const dataStr = dataLines.join('\n');
+        const result = await flushEvent(eventType, dataStr);
+        if (result === 'return') return;
+      }
+
+      if (!response.ok) {
+        setPhase('error', `Erro HTTP ${response.status}: ${response.statusText}`);
+        return;
+      }
+    } catch (err: any) {
+      if (err?.name === 'AbortError') {
+        console.log('[transcription] import fetch aborted by user');
+        return;
+      }
+      console.error('[transcription] import error:', err);
+      setPhase('error', err?.message || 'Erro durante a transcrição');
+      return;
+    }
+    setPhase('error', 'Conexão perdida com o servidor de transcrição.');
+  }
+
   return {
     transcriptionState: state,
     elapsedSeconds,
@@ -568,5 +730,6 @@ export function useTranscriptionState() {
     handleRecordClick,
     handleCancel,
     setMode,
+    importAndTranscribe,
   };
 }

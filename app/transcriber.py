@@ -243,7 +243,7 @@ class Transcriber:
 
     def transcribe(
         self,
-        audio_path: Path,
+        audio_path: Path | list[Path],
         prompt_text: str,
         keywords: list[str],
         mode: TranscriptionMode = "auto",
@@ -254,7 +254,7 @@ class Transcriber:
         """Transcribe an audio file and return the resulting text.
 
         Args:
-            audio_path:  Path to the WAV file to transcribe.
+            audio_path:  Path or list of Paths to the WAV file(s) to transcribe.
             prompt_text: The active prompt's instruction text (used by Gemini).
             keywords:    Glossary words (used by both backends differently).
             mode:        Transcription mode — "auto" | "gemini" | "groq".
@@ -266,6 +266,18 @@ class Transcriber:
         Raises:
             TranscriptionError: If the selected backend fails and no fallback exists.
         """
+        # If audio_path is a list, it represents Dual Mode (microphone + system audio)
+        if isinstance(audio_path, list):
+            print(f"[DEBUG] Transcriber: áudio dual (multi-faixas) detectado, redirecionando para Gemini")
+            return self._transcribe_gemini(
+                audio_path=audio_path,
+                prompt_text=prompt_text,
+                keywords=keywords,
+                on_chunk=on_chunk,
+                source="dual",
+                on_status=on_status
+            )
+
         # Audio files longer than 10 minutes are always sent to Gemini,
         # regardless of the selected mode — Groq has a 25 MB file limit
         # and client-side chunking degrades quality.
@@ -314,7 +326,7 @@ class Transcriber:
 
     def _transcribe_gemini(
         self,
-        audio_path: Path,
+        audio_path: Path | list[Path],
         prompt_text: str,
         keywords: list[str],
         on_chunk: callable = None,
@@ -341,14 +353,30 @@ class Transcriber:
         # Build system instruction combining prompt text and glossary
         system_instruction = self._build_system_instruction(prompt_text, keywords, source)
 
-        # Upload the audio file to Files API (SDK >= 1.0 uses file=, not path=)
+        # Upload the audio file(s) to Files API
         if on_status:
             on_status({"phase": "uploading", "message": "Enviando áudio para Google Gemini..."})
-        print(f"[DEBUG] Gemini: iniciando upload do arquivo {audio_path.name}")
+
+        uploaded_files = []
         try:
-            uploaded_file = client.files.upload(file=str(audio_path))
-            print(f"[DEBUG] Gemini: upload concluido -> {uploaded_file.name}")
+            if isinstance(audio_path, list):
+                for p in audio_path:
+                    print(f"[DEBUG] Gemini: iniciando upload do arquivo {p.name}")
+                    uploaded_file = client.files.upload(file=str(p))
+                    print(f"[DEBUG] Gemini: upload concluido -> {uploaded_file.name}")
+                    uploaded_files.append(uploaded_file)
+            else:
+                print(f"[DEBUG] Gemini: iniciando upload do arquivo {audio_path.name}")
+                uploaded_file = client.files.upload(file=str(audio_path))
+                print(f"[DEBUG] Gemini: upload concluido -> {uploaded_file.name}")
+                uploaded_files.append(uploaded_file)
         except Exception as exc:
+            # Cleanup uploaded files on failure
+            for uf in uploaded_files:
+                try:
+                    client.files.delete(name=uf.name)
+                except Exception:
+                    pass
             raise TranscriptionError(
                 f"Falha ao fazer upload do audio: {exc}"
             ) from exc
@@ -357,9 +385,13 @@ class Transcriber:
             on_status({"phase": "transcribing", "message": "Gemini processando áudio..."})
 
         try:
+            # Build content inputs: include all uploaded files followed by prompt string
+            contents = list(uploaded_files)
+            contents.append("Audio transcription:")
+
             response_stream = client.models.generate_content_stream(
                 model=GEMINI_MODEL,
-                contents=[uploaded_file, "Audio transcription:"],
+                contents=contents,
                 config=types.GenerateContentConfig(
                     system_instruction=system_instruction,
                 ),
@@ -406,11 +438,12 @@ class Transcriber:
                 f"Erro na requisicao ao Gemini: {exc}"
             ) from exc
         finally:
-            # Best-effort cleanup of the uploaded file
-            try:
-                client.files.delete(name=uploaded_file.name)
-            except Exception:
-                pass
+            # Best-effort cleanup of all uploaded files
+            for uf in uploaded_files:
+                try:
+                    client.files.delete(name=uf.name)
+                except Exception:
+                    pass
 
     @staticmethod
     def _build_system_instruction(prompt_text: str, keywords: list[str], source: str = "mic") -> str:

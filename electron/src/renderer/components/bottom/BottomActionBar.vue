@@ -4,6 +4,20 @@
     <TranscriptionProgress v-if="transcriptionState === 'TRANSCRIBING'" />
   </Transition>
 
+  <!-- Undo Toast -->
+  <Transition name="toast-slide">
+    <div
+      v-if="showUndoToast"
+      class="flex items-center justify-between gap-3 px-4 py-2.5 mx-4 mb-2 glass-surface rounded-xl"
+    >
+      <span class="text-xs text-text-primary">{{ t('toast.content_cleared') }}</span>
+      <button
+        @click="handleUndo"
+        class="text-xs font-semibold text-accent-blue hover:text-blue-400 transition-colors duration-100 px-2 py-1 rounded-lg hover:bg-white/5"
+      >{{ t('toast.undo') }}</button>
+    </div>
+  </Transition>
+
   <div class="flex items-center gap-3 px-4 py-3 border-t border-white/10">
     <!-- Left: Timer -->
     <Timer :seconds="elapsedSeconds" />
@@ -41,6 +55,7 @@
 </template>
 
 <script setup lang="ts">
+import { ref, onUnmounted } from 'vue';
 import Timer from './Timer.vue';
 import AudioVisualizer from './AudioVisualizer.vue';
 import RecordButton from './RecordButton.vue';
@@ -53,8 +68,11 @@ import { t } from '../../i18n';
 
 const { transcriptionState, elapsedSeconds, isShowingCancel, handleRecordClick, handleCancel, setMode } = useTranscriptionState();
 const { resetActiveTab } = useTabs();
-const { clearEditor, getMarkdown } = useEditor();
+const { clearEditor, getMarkdown, undo } = useEditor();
 const { copyToClipboard } = useClipboard();
+
+const showUndoToast = ref(false);
+let undoToastTimer: ReturnType<typeof setTimeout> | null = null;
 
 function handleCopy() {
   const markdown = getMarkdown();
@@ -64,11 +82,32 @@ function handleCopy() {
 function handleReset() {
   clearEditor();
   resetActiveTab();
+
+  // Show undo toast
+  showUndoToast.value = true;
+  if (undoToastTimer) clearTimeout(undoToastTimer);
+  undoToastTimer = setTimeout(() => {
+    showUndoToast.value = false;
+    undoToastTimer = null;
+  }, 6000);
+}
+
+function handleUndo() {
+  undo();
+  showUndoToast.value = false;
+  if (undoToastTimer) {
+    clearTimeout(undoToastTimer);
+    undoToastTimer = null;
+  }
 }
 
 function handleModeChange(mode: 'mic' | 'system' | 'dual') {
   setMode(mode);
 }
+
+onUnmounted(() => {
+  if (undoToastTimer) clearTimeout(undoToastTimer);
+});
 </script>
 
 <style scoped>
@@ -98,4 +137,35 @@ function handleModeChange(mode: 'mic' | 'system' | 'dual') {
   transform: translateY(-10px);
   max-height: 0;
 }
+
+/* Toast animation */
+.toast-slide-enter-active {
+  transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.toast-slide-leave-active {
+  transition: all 0.2s ease-in;
+}
+.toast-slide-enter-from {
+  opacity: 0;
+  transform: translateY(8px);
+  max-height: 0;
+  margin-bottom: 0;
+}
+.toast-slide-enter-to {
+  opacity: 1;
+  transform: translateY(0);
+  max-height: 60px;
+}
+.toast-slide-leave-from {
+  opacity: 1;
+  transform: translateY(0);
+  max-height: 60px;
+}
+.toast-slide-leave-to {
+  opacity: 0;
+  transform: translateY(8px);
+  max-height: 0;
+  margin-bottom: 0;
+}
 </style>
+

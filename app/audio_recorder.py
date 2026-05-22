@@ -132,28 +132,54 @@ class AudioRecorder:
 
     def _start_dual_recording(self) -> None:
         """Start simultaneous capture from microphone and system audio."""
-        # Microphone stream — uses the default input device
-        self._stream_mic = sd.InputStream(
-            device=None,  # Default input
-            samplerate=_SAMPLE_RATE,
-            channels=_CHANNELS,
-            dtype=_DTYPE,
-            blocksize=_BLOCK_SIZE,
-            callback=self._mic_callback,
-        )
-        self._stream_mic.start()
+        try:
+            # Microphone stream — uses the default input device
+            self._stream_mic = sd.InputStream(
+                device=None,  # Default input
+                samplerate=_SAMPLE_RATE,
+                channels=_CHANNELS,
+                dtype=_DTYPE,
+                blocksize=_BLOCK_SIZE,
+                callback=self._mic_callback,
+            )
+            self._stream_mic.start()
 
-        # System audio stream — uses PipeWire / PulseAudio monitor device
-        system_device = self._resolve_device_for_system()
-        self._stream_sys = sd.InputStream(
-            device=system_device,
-            samplerate=_SAMPLE_RATE,
-            channels=_CHANNELS,
-            dtype=_DTYPE,
-            blocksize=_BLOCK_SIZE,
-            callback=self._sys_callback,
-        )
-        self._stream_sys.start()
+            # System audio stream — uses PipeWire / PulseAudio monitor device
+            system_device = self._resolve_device_for_system()
+            if system_device is None:
+                raise RuntimeError(
+                    "Dispositivo de monitoramento do áudio do sistema não encontrado. "
+                    "O Modo Dual requer PulseAudio/PipeWire com um monitor ativo."
+                )
+
+            self._stream_sys = sd.InputStream(
+                device=system_device,
+                samplerate=_SAMPLE_RATE,
+                channels=_CHANNELS,
+                dtype=_DTYPE,
+                blocksize=_BLOCK_SIZE,
+                callback=self._sys_callback,
+            )
+            self._stream_sys.start()
+        except Exception as exc:
+            # Clean up streams and state on failure
+            with self._lock:
+                self._recording = False
+            if self._stream_mic:
+                try:
+                    self._stream_mic.stop()
+                    self._stream_mic.close()
+                except Exception:
+                    pass
+                self._stream_mic = None
+            if self._stream_sys:
+                try:
+                    self._stream_sys.stop()
+                    self._stream_sys.close()
+                except Exception:
+                    pass
+                self._stream_sys = None
+            raise RuntimeError(f"Falha ao iniciar streams do Modo Dual: {exc}") from exc
 
     def _resolve_device_for_system(self) -> int | None:
         """Resolve system audio device index (same logic as _resolve_device for system_audio)."""

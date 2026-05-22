@@ -17,8 +17,8 @@ export interface ElectronAPI {
   openDirectoryPicker(): Promise<string | null>;
   readFile(path: string): Promise<ArrayBuffer | null>;
   deleteFile(path: string): Promise<boolean>;
-  insertTextAtCursor(text: string): Promise<boolean>;
-  onInsertText(callback: (text: string) => void): () => void;
+  insertTextAtCursor(text: string, tabId?: string): Promise<boolean>;
+  onInsertText(callback: (payload: { text: string; tabId?: string }) => void): () => void;
   resetInsertionPoint(): void;
   onResetInsertionPoint(callback: () => void): () => void;
 }
@@ -60,15 +60,15 @@ const electronAPI: ElectronAPI = {
     return ipcRenderer.invoke('delete-file', filePath);
   },
 
-  insertTextAtCursor(text: string): Promise<boolean> {
+  insertTextAtCursor(text: string, tabId?: string): Promise<boolean> {
     // Use send (fire-and-forget) instead of invoke to avoid unnecessary
     // round-trip latency. The main process just forwards to renderer.
-    ipcRenderer.send('insert-text-at-cursor', text);
+    ipcRenderer.send('insert-text-at-cursor', { text, tabId });
     return Promise.resolve(true);
   },
 
   onInsertText(callback) {
-    const handler = (_event: Electron.IpcRendererEvent, text: string) => callback(text);
+    const handler = (_event: Electron.IpcRendererEvent, payload: { text: string; tabId?: string }) => callback(payload);
     ipcRenderer.on('insert-text', handler);
     return () => ipcRenderer.removeListener('insert-text', handler);
   },

@@ -15,8 +15,8 @@ export interface ElectronAPI {
   openDirectoryPicker(): Promise<string | null>;
   readFile(path: string): Promise<ArrayBuffer | null>;
   deleteFile(path: string): Promise<boolean>;
-  insertTextAtCursor(text: string): Promise<boolean>;
-  onInsertText(callback: (text: string) => void): () => void;
+  insertTextAtCursor(text: string, tabId?: string): Promise<boolean>;
+  onInsertText(callback: (payload: { text: string; tabId?: string }) => void): () => void;
   resetInsertionPoint(): void;
   onResetInsertionPoint(callback: () => void): () => void;
 }
