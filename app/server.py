@@ -209,39 +209,6 @@ async def _transcription_events(
 # ---------------------------------------------------------------------------
 
 
-def _merge_transcriptions(mic_chunks: list[str], sys_chunks: list[str]) -> list[str]:
-    """Merge mic and system transcriptions.
-
-    Mic transcription: simple text (user spoke)
-    System transcription: with diarization (@Interlocutor X:)
-
-    Strategy: Concatenate with markers. Mic text is marked as @Usuario,
-    system text retains its @Interlocutor markers.
-    """
-    mic_text = "".join(mic_chunks).strip()
-    sys_text = "".join(sys_chunks).strip()
-
-    if not mic_text and not sys_text:
-        return []
-
-    if not mic_text:
-        return [sys_text]
-
-    if not sys_text:
-        return [f"@Usuario: {mic_text}"]
-
-    result_parts = []
-    if mic_text.strip():
-        result_parts.append(f"@Usuario: {mic_text}")
-    if sys_text.strip():
-        if result_parts:
-            result_parts.append("")
-        result_parts.append(sys_text)
-
-    merged = "\n\n".join(result_parts)
-    return [merged]
-
-
 async def _transcription_events_dual(
     session_id: str,
     mic_path: Path,
@@ -249,127 +216,105 @@ async def _transcription_events_dual(
     prompt_text: str,
     keywords: list[str],
 ):
-    """Async generator for dual mode transcription with merge.
+    """Async generator for dual mode transcription using Gemini multimodal audio.
 
-    Runs mic and system transcriptions in parallel threads, waits for both,
-    then yields merged transcription chunks.
+    Yields SSE frames on the "chunk" and "status" events.
+    On completion yields: data: [DONE]
+    On error yields:     data: [ERROR] <message>
     """
     queue: asyncio.Queue[tuple[str, str | dict] | None] = asyncio.Queue()
     running_loop = asyncio.get_running_loop()
 
-    mic_chunks: list[str] = []
-    sys_chunks: list[str] = []
-    mic_done = False
-    sys_done = False
-    session_status = "streaming"
-
-    def mic_chunk_callback(chunk_text: str) -> None:
-        if chunk_text.startswith("[ERROR]"):
-            running_loop.call_soon_threadsafe(queue.put_nowait, ("MIC_ERROR", chunk_text))
-        else:
-            mic_chunks.append(chunk_text)
-
-    def sys_chunk_callback(chunk_text: str) -> None:
-        if chunk_text.startswith("[ERROR]"):
-            running_loop.call_soon_threadsafe(queue.put_nowait, ("SYS_ERROR", chunk_text))
-        else:
-            sys_chunks.append(chunk_text)
+    def chunk_callback(chunk_text: str) -> None:
+        """Called from the background transcription thread — push to async queue."""
+        preview = chunk_text[:40].replace('\n', '\\n')
+        logger.debug(
+            "[DUAL-CHUNK-IN] len=%d preview='%s'",
+            len(chunk_text), preview,
+        )
+        running_loop.call_soon_threadsafe(queue.put_nowait, ("CHUNK", chunk_text))
 
     def status_callback(payload: dict) -> None:
+        """Called from the background transcription thread — push status event."""
+        logger.debug("[DUAL-STATUS-IN] phase=%s", payload.get("phase"))
         running_loop.call_soon_threadsafe(queue.put_nowait, ("STATUS", payload))
 
-    def run_mic_transcribe():
+    def run_transcribe():
+        """Execute on a background thread so the event loop is never blocked."""
+        print(f"[SERVER] Iniciando transcrição Dual | session={session_id}")
+        status_callback({"phase": "processing", "message": "Enviando áudios para transcrição dual..."})
+        t = transcriber.Transcriber(is_online_fn=lambda: _net_mon.is_online)
         try:
-            t = transcriber.Transcriber(is_online_fn=lambda: _net_mon.is_online)
             t.transcribe(
-                audio_path=mic_path,
+                audio_path=[mic_path, sys_path],
                 prompt_text=prompt_text,
                 keywords=keywords,
                 mode="gemini",
-                on_chunk=mic_chunk_callback,
-                source="mic",
+                on_chunk=chunk_callback,
+                source="dual",
                 on_status=status_callback,
             )
         except Exception as exc:
-            logger.error("Mic transcription error: %s", exc)
-            running_loop.call_soon_threadsafe(queue.put_nowait, ("MIC_ERROR", f"[ERROR] {exc}"))
-        running_loop.call_soon_threadsafe(queue.put_nowait, ("MIC_DONE", ""))
+            logger.error("Dual transcription error: %s", exc)
+            status_callback({"phase": "error", "message": f"Erro: {exc}"})
+            running_loop.call_soon_threadsafe(queue.put_nowait, ("CHUNK", f"[ERROR] {exc}"))
+        finally:
+            running_loop.call_soon_threadsafe(queue.put_nowait, None)
 
-    def run_sys_transcribe():
-        try:
-            t = transcriber.Transcriber(is_online_fn=lambda: _net_mon.is_online)
-            t.transcribe(
-                audio_path=sys_path,
-                prompt_text=prompt_text,
-                keywords=keywords,
-                mode="gemini",
-                on_chunk=sys_chunk_callback,
-                source="system",
-                on_status=status_callback,
-            )
-        except Exception as exc:
-            logger.error("System transcription error: %s", exc)
-            running_loop.call_soon_threadsafe(queue.put_nowait, ("SYS_ERROR", f"[ERROR] {exc}"))
-        running_loop.call_soon_threadsafe(queue.put_nowait, ("SYS_DONE", ""))
+    thread = threading.Thread(target=run_transcribe, daemon=True)
+    thread.start()
 
-    mic_thread = threading.Thread(target=run_mic_transcribe, daemon=True)
-    sys_thread = threading.Thread(target=run_sys_transcribe, daemon=True)
-    mic_thread.start()
-    sys_thread.start()
+    with _session_lock:
+        if session_id in _active_sessions:
+            _active_sessions[session_id]["status"] = "streaming"
+
+    accumulated = ""
+    chunks_received = 0
+    session_status = "done"
 
     try:
-        while not (mic_done and sys_done):
+        while True:
             item = await queue.get()
             if item is None:
-                continue
+                break
 
             event_type, payload = item
 
+            # --- Status events: emit immediately ---
             if event_type == "STATUS":
                 import json as _json
                 yield _sse_frame("status", _json.dumps(payload, ensure_ascii=False))
+                continue
 
-            elif event_type == "MIC_DONE":
-                mic_done = True
+            # --- Chunk events: emit immediately ---
+            chunk_text = payload  # payload is str for CHUNK
+            chunks_received += 1
 
-            elif event_type == "SYS_DONE":
-                sys_done = True
-
-            elif event_type == "MIC_ERROR":
+            # Check for error marker
+            if isinstance(chunk_text, str) and chunk_text.startswith("[ERROR]"):
                 session_status = "error"
                 with _session_lock:
                     if session_id in _active_sessions:
                         _active_sessions[session_id]["status"] = "error"
-                yield _sse_frame("chunk", payload)
-                yield _sse_frame("chunk", "[DONE]")
+                yield _sse_frame("chunk", chunk_text)
+                break
 
-            elif event_type == "SYS_ERROR":
-                session_status = "error"
-                with _session_lock:
-                    if session_id in _active_sessions:
-                        _active_sessions[session_id]["status"] = "error"
-                yield _sse_frame("chunk", payload)
-                yield _sse_frame("chunk", "[DONE]")
-
-        if session_status == "error":
-            logger.info("Dual transcription had errors for session %s", session_id)
-            return
-
-        merged_parts = _merge_transcriptions(mic_chunks, sys_chunks)
-
-        accumulated = ""
-        for part in merged_parts:
-            accumulated += part
+            # Emit chunk as-is
+            accumulated += chunk_text
             with _session_lock:
                 if session_id in _active_sessions:
                     _active_sessions[session_id]["accumulated_text"] = accumulated
-            yield _sse_frame("chunk", part)
+            yield _sse_frame("chunk", chunk_text)
+            logger.debug(
+                "[DUAL-CHUNK-OUT] len=%d preview='%s'",
+                len(chunk_text),
+                chunk_text[:80].replace("\n", "\\n"),
+            )
 
         logger.info(
-            "[DUAL-TRANSCRIPTION-DONE] session=%s mic_chars=%d sys_chars=%d merged_chars=%d",
-            session_id, len("".join(mic_chunks)), len("".join(sys_chunks)), len(accumulated),
+            "[DUAL-TRANSCRIPTION-DONE] session=%s received=%d total_chars=%d",
+            session_id, chunks_received, len(accumulated),
         )
-
     except asyncio.CancelledError:
         logger.info("SSE stream cancelled for dual session %s", session_id)
         session_status = "error"
@@ -378,31 +323,30 @@ async def _transcription_events_dual(
                 _active_sessions[session_id]["status"] = "error"
         raise
     finally:
+        # If transcription failed, preserve audio files in Vault
         if session_status == "error":
             try:
+                VAULT_PATH.mkdir(parents=True, exist_ok=True)
                 import shutil
-                preserve_dir = Path.home() / "TranscribeAssistant_DualRecordings"
-                preserve_dir.mkdir(parents=True, exist_ok=True)
                 short_sid = session_id[:12]
                 if mic_path.exists():
-                    shutil.copy2(mic_path, preserve_dir / f"failed_{short_sid}_mic.wav")
+                    shutil.copy2(mic_path, VAULT_PATH / f"transcribe_dual_{short_sid}_mic.wav")
                 if sys_path.exists():
-                    shutil.copy2(sys_path, preserve_dir / f"failed_{short_sid}_sys.wav")
+                    shutil.copy2(sys_path, VAULT_PATH / f"transcribe_dual_{short_sid}_sys.wav")
                 logger.info(
-                    "Dual audio preserved for debugging: %s",
-                    preserve_dir,
+                    "Dual transcription failed — audio files preserved in Vault"
                 )
             except Exception as e:
-                logger.error("Failed to preserve dual audio: %s", e)
+                logger.error("Failed to copy dual audio to Vault: %s", e)
 
         mic_path.unlink(missing_ok=True)
         sys_path.unlink(missing_ok=True)
 
     with _session_lock:
         if session_id in _active_sessions:
-            _active_sessions[session_id]["status"] = "done"
+            _active_sessions[session_id]["status"] = session_status
     logger.info("Dual transcription DONE for session %s", session_id)
-    yield _sse_frame("status", '{"phase":"done","message":"Transcricao dual concluida!"}')
+    yield _sse_frame("status", '{"phase":"done","message":"Transcrição dual concluída!"}')
     yield _sse_frame("chunk", "[DONE]")
 
 

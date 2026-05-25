@@ -147,20 +147,18 @@ class AudioRecorder:
             # System audio stream — uses PipeWire / PulseAudio monitor device
             system_device = self._resolve_device_for_system()
             if system_device is None:
-                raise RuntimeError(
-                    "Dispositivo de monitoramento do áudio do sistema não encontrado. "
-                    "O Modo Dual requer PulseAudio/PipeWire com um monitor ativo."
+                # No native monitor device - use parec fallback
+                self._start_parec_recording()
+            else:
+                self._stream_sys = sd.InputStream(
+                    device=system_device,
+                    samplerate=_SAMPLE_RATE,
+                    channels=_CHANNELS,
+                    dtype=_DTYPE,
+                    blocksize=_BLOCK_SIZE,
+                    callback=self._sys_callback,
                 )
-
-            self._stream_sys = sd.InputStream(
-                device=system_device,
-                samplerate=_SAMPLE_RATE,
-                channels=_CHANNELS,
-                dtype=_DTYPE,
-                blocksize=_BLOCK_SIZE,
-                callback=self._sys_callback,
-            )
-            self._stream_sys.start()
+                self._stream_sys.start()
         except Exception as exc:
             # Clean up streams and state on failure
             with self._lock:
@@ -179,6 +177,15 @@ class AudioRecorder:
                 except Exception:
                     pass
                 self._stream_sys = None
+            if self._parec_process:
+                try:
+                    self._parec_process.terminate()
+                    self._parec_process.wait(timeout=2)
+                except Exception:
+                    pass
+                self._parec_process = None
+            if self._parec_thread:
+                self._parec_thread = None
             raise RuntimeError(f"Falha ao iniciar streams do Modo Dual: {exc}") from exc
 
     def _resolve_device_for_system(self) -> int | None:
@@ -307,15 +314,20 @@ class AudioRecorder:
                 # Convert to numpy array
                 audio_data = np.array(samples, dtype=np.float32) / 32768.0
 
-                # Compute RMS for VU meter
-                rms = float(np.sqrt(np.mean(audio_data**2)))
-                self._current_rms = min(rms * 3.0, 1.0)
-                if self._on_rms_update:
-                    self._on_rms_update(self._current_rms)
+                if self._source == "dual":
+                    # Store in system frames for dual mode
+                    with self._sys_lock:
+                        self._sys_frames.append(audio_data.astype(np.float32))
+                else:
+                    # Compute RMS for VU meter
+                    rms = float(np.sqrt(np.mean(audio_data**2)))
+                    self._current_rms = min(rms * 3.0, 1.0)
+                    if self._on_rms_update:
+                        self._on_rms_update(self._current_rms)
 
-                # Store frame
-                with self._lock:
-                    self._frames.append(audio_data.astype(np.float32))
+                    # Store frame
+                    with self._lock:
+                        self._frames.append(audio_data.astype(np.float32))
 
         except Exception:
             pass
@@ -398,6 +410,18 @@ class AudioRecorder:
                 self._stream_sys.close()
                 self._stream_sys = None
 
+            if self._parec_process:
+                self._parec_process.terminate()
+                try:
+                    self._parec_process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    self._parec_process.kill()
+                self._parec_process = None
+
+            if self._parec_thread:
+                self._parec_thread.join(timeout=2)
+                self._parec_thread = None
+
             with self._mic_lock:
                 self._mic_frames = []
             with self._sys_lock:
@@ -461,6 +485,18 @@ class AudioRecorder:
                 self._stream_sys.stop()
                 self._stream_sys.close()
                 self._stream_sys = None
+
+            if self._parec_process:
+                self._parec_process.terminate()
+                try:
+                    self._parec_process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    self._parec_process.kill()
+                self._parec_process = None
+
+            if self._parec_thread:
+                self._parec_thread.join(timeout=2)
+                self._parec_thread = None
         else:
             # Stop sounddevice stream if active
             if self._stream:
