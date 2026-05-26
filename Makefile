@@ -22,6 +22,13 @@ install:
 	@echo "🤖 Compilando e empacotando o frontend Electron..."
 	cd electron && npm install && npm run package
 	
+	@echo "🤖 Verificando banco de dados existente para preservação..."
+	# Se existir um banco de dados, cria um backup em /tmp para evitar perda de dados e configurações do usuário
+	@if [ -f $(INSTALL_DIR)/resources/transcriber_data.db ]; then \
+		echo "   💾 Banco de dados transcriber_data.db encontrado. Criando backup temporário..."; \
+		cp $(INSTALL_DIR)/resources/transcriber_data.db /tmp/transcriber_data_backup.db; \
+	fi
+	
 	@echo "🤖 Limpando diretório de instalação antigo..."
 	rm -rf $(INSTALL_DIR)
 	mkdir -p $(INSTALL_DIR)
@@ -39,6 +46,19 @@ install:
 	@echo "🤖 Instalando e sincronizando dependências do Python nos recursos instalados..."
 	# Usa o uv para sincronizar e recriar o ambiente virtual na pasta instalada de forma limpa e otimizada
 	uv sync --project $(INSTALL_DIR)/resources
+	
+	@echo "🤖 Restaurando banco de dados a partir do backup..."
+	# Restaura o banco de dados preservado se o backup existir, ou copia o do diretório de desenvolvimento como inicial
+	@if [ -f /tmp/transcriber_data_backup.db ]; then \
+		echo "   💾 Restaurando banco de dados transcriber_data.db anterior..."; \
+		cp /tmp/transcriber_data_backup.db $(INSTALL_DIR)/resources/transcriber_data.db; \
+		rm -f /tmp/transcriber_data_backup.db; \
+	elif [ -f transcriber_data.db ]; then \
+		echo "   💾 Nenhum banco anterior na instalação, mas detectado banco transcriber_data.db de desenvolvimento. Copiando..."; \
+		cp transcriber_data.db $(INSTALL_DIR)/resources/transcriber_data.db; \
+	else \
+		echo "   🆕 Nenhum banco anterior encontrado. Um novo banco será gerado na primeira inicialização."; \
+	fi
 	
 	@echo "🤖 Configurando ícone da aplicação..."
 	mkdir -p $(INSTALL_DIR)/resources/assets
