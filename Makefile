@@ -47,7 +47,7 @@ install:
 	@echo "🤖 Criando script executável em $(BIN_DIR)/transcribe-assistant..."
 	mkdir -p $(BIN_DIR)
 	@echo '#!/bin/bash' > $(BIN_DIR)/transcribe-assistant
-	@echo 'exec "$(INSTALL_DIR)/transcribe-assistant-electron" "$$@"' >> $(BIN_DIR)/transcribe-assistant
+	@echo 'exec "$(INSTALL_DIR)/transcribe-assistant-electron" --no-sandbox "$$@"' >> $(BIN_DIR)/transcribe-assistant
 	chmod +x $(BIN_DIR)/transcribe-assistant
 	
 	@echo "🤖 Criando atalho de desktop (.desktop)..."
@@ -61,6 +61,7 @@ install:
 	@echo 'Terminal=false' >> $(DESKTOP_DIR)/transcribe-assistant.desktop
 	@echo 'Categories=Utility;Office;' >> $(DESKTOP_DIR)/transcribe-assistant.desktop
 	@echo 'StartupNotify=true' >> $(DESKTOP_DIR)/transcribe-assistant.desktop
+	@echo 'StartupWMClass=transcribe-assistant-electron' >> $(DESKTOP_DIR)/transcribe-assistant.desktop
 	chmod +x $(DESKTOP_DIR)/transcribe-assistant.desktop
 	
 	@echo "🤖 Configurando inicialização automática (autostart)..."

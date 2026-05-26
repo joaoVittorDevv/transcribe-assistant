@@ -193,12 +193,17 @@ function setupIpcHandlers(): void {
 // Window
 // ---------------------------------------------------------------------------
 function createWindow(): void {
+  const iconPath = app.isPackaged
+    ? path.join(process.resourcesPath, 'assets/icon.png')
+    : path.resolve(__dirname, '../../../../assets/assist_transcribe_1x1.png');
+
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 800,
     minWidth: 900,
     minHeight: 600,
     backgroundColor: '#121B26',
+    icon: iconPath,
     webPreferences: {
       preload: path.join(__dirname, '../preload/index.js'),
       nodeIntegration: false,
@@ -211,7 +216,7 @@ function createWindow(): void {
   if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {
     mainWindow.loadURL(MAIN_WINDOW_VITE_DEV_SERVER_URL);
   } else {
-    mainWindow.loadFile(path.join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}/index.html`));
+    mainWindow.loadFile(path.join(__dirname, `../../renderer/${MAIN_WINDOW_VITE_NAME}/index.html`));
   }
 
   mainWindow.on('closed', () => {
