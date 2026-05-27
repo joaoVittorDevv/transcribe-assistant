@@ -84,13 +84,8 @@ install:
 	@echo 'StartupWMClass=transcribe-assistant-electron' >> $(DESKTOP_DIR)/transcribe-assistant.desktop
 	chmod +x $(DESKTOP_DIR)/transcribe-assistant.desktop
 	
-	@echo "🤖 Configurando inicialização automática (autostart)..."
-	mkdir -p $(AUTOSTART_DIR)
-	cp $(DESKTOP_DIR)/transcribe-assistant.desktop $(AUTOSTART_DIR)/
-	
 	@echo "🎉 Instalação concluída com sucesso (v$(VERSION))!"
 	@echo "👉 O aplicativo foi instalado em: $(INSTALL_DIR)"
-	@echo "👉 Um atalho de inicialização foi criado em: $(AUTOSTART_DIR)"
 	@echo "👉 Você pode iniciar a aplicação buscando por 'Transcribe Assistant' no menu de aplicativos do Ubuntu ou rodando 'transcribe-assistant' no terminal (caso $(BIN_DIR) esteja no seu PATH)."
 
 uninstall:
