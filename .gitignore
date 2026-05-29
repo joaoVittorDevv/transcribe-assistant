@@ -29,6 +29,19 @@ docs/
 # Logs
 *.log
 node_modules/
+
+# Electron build output
+out/
+dist/
+
+# Vite cache
+.vite/
+
+# Ruff cache
+.ruff_cache/
+
+# Claude local config
+.claude/
 .specs/
 graphify-out/
 .a5c/
