@@ -103,15 +103,20 @@ function startAudioEngine(): void {
 
 function stopAudioEngine(): void {
   if (!audioEngine) return;
+  // Capture and nullify reference immediately to prevent duplicate
+  // calls from 'closed', 'window-all-closed', and 'before-quit' events.
+  const engine = audioEngine;
+  audioEngine = null;
   try {
-    audioEngine.stdin?.write(JSON.stringify({ action: 'stop' }) + '\n');
-    audioEngine.stdin?.end();
-  } catch { /* ignore */ }
-  setTimeout(() => {
-    if (audioEngine && !audioEngine.killed) {
-      audioEngine.kill('SIGTERM');
+    if (engine.stdin && !engine.stdin.destroyed) {
+      engine.stdin.write(JSON.stringify({ action: 'stop' }) + '\n');
+      engine.stdin.end();
     }
-    audioEngine = null;
+  } catch { /* ignore — stream may already be closed */ }
+  setTimeout(() => {
+    if (engine && !engine.killed) {
+      engine.kill('SIGTERM');
+    }
   }, 2000);
 }
 

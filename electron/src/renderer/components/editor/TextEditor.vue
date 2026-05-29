@@ -4,8 +4,8 @@
     <FindReplaceBar
       ref="findBarRef"
       :visible="findBarVisible"
-      :matchCount="matches.length"
-      :activeMatchIndex="activeMatchIdx"
+      :matchCount="matchCount"
+      :activeMatchIndex="activeMatchIndex"
       @search="onFind"
       @next="navigateMatch('next')"
       @prev="navigateMatch('prev')"
@@ -16,27 +16,27 @@
     <div
       class="flex-1 glass-surface rounded-xl overflow-hidden focus-within:ring-2 focus-within:ring-accent-blue/50 transition-shadow duration-150"
     >
-      <div ref="editorEl" class="quill-editor h-full"></div>
+      <EditorContent :editor="editor" class="h-full" />
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, reactive, onMounted, onUnmounted, watch } from 'vue';
-import Quill from 'quill';
-import 'quill/dist/quill.snow.css';
+import { useEditor, EditorContent } from '@tiptap/vue-3';
+import StarterKit from '@tiptap/starter-kit';
+import { Markdown } from '@tiptap/markdown';
+import SearchAndReplace from '@sereneinserenade/tiptap-search-and-replace';
 import EditorToolbar from './EditorToolbar.vue';
 import FindReplaceBar from './FindReplaceBar.vue';
 import { useTabs } from '../../composables/useTabs';
-import { useEditor } from '../../composables/useEditor';
+import { useEditor as useEditorComposable } from '../../composables/useEditor';
 import type { ElectronAPI } from '../../types/global';
 
-const editorEl = ref<HTMLElement | null>(null);
 const findBarRef = ref<InstanceType<typeof FindReplaceBar> | null>(null);
-let quill: Quill | null = null;
 
 const { activeTabId, getActiveTab, updateContent } = useTabs();
-const { registerEditor } = useEditor();
+const { registerEditor } = useEditorComposable();
 const api = window.electronAPI as ElectronAPI;
 
 const activeFormats = reactive<Set<string>>(new Set());
@@ -44,127 +44,69 @@ const activeFormats = reactive<Set<string>>(new Set());
 let cleanupInsertText: (() => void) | null = null;
 let cleanupResetInsertion: (() => void) | null = null;
 // Tracks insertion point during transcription streaming.
-// On first chunk, captured from current cursor. Advanced by each chunk.
-// Reset to null when transcription ends or user switches tabs.
+// Captured as a ProseMirror position index.
 let transcriptionInsertIndex: number | null = null;
 
 // ------------------------------------------------------------------
 // Find & Replace state
 // ------------------------------------------------------------------
-
-interface Match {
-  index: number;
-  length: number;
-}
-
 const findBarVisible = ref(false);
-const matches = ref<Match[]>([]);
-const activeMatchIdx = ref(0);
-let lastSearchText = '';
+const matchCount = ref(0);
+const activeMatchIndex = ref(0);
 
-function findAllMatches(searchText: string): Match[] {
-  if (!quill || !searchText) return [];
-  const fullText = quill.getText();
-  const searchLower = searchText.toLowerCase();
-  const textLower = fullText.toLowerCase();
-  const result: Match[] = [];
-  let startIndex = 0;
-  while ((startIndex = textLower.indexOf(searchLower, startIndex)) !== -1) {
-    result.push({ index: startIndex, length: searchText.length });
-    startIndex += searchText.length;
-  }
-  return result;
-}
-
-function applyHighlights(activeIdx: number) {
-  if (!quill) return;
-  for (let i = 0; i < matches.value.length; i++) {
-    const m = matches.value[i];
-    const color = i === activeIdx ? '#F97316' : '#FBBF24';
-    quill.formatText(m.index, m.length, 'background', color);
+function updateSearchState() {
+  if (!editor.value) return;
+  const storage = (editor.value.storage as any).searchAndReplace;
+  if (storage) {
+    matchCount.value = storage.results?.length || 0;
+    activeMatchIndex.value = storage.resultIndex ?? 0;
   }
 }
 
-function clearHighlights() {
-  if (!quill) return;
-  for (const m of matches.value) {
-    quill.formatText(m.index, m.length, 'background', false);
-  }
+// Schedule a delayed search state update to allow ProseMirror
+// decoration plugin to finish processing before reading results.
+function scheduleSearchStateUpdate() {
+  setTimeout(() => updateSearchState(), 50);
 }
 
 function onFind(searchText: string) {
-  clearHighlights();
-  matches.value = findAllMatches(searchText);
-  activeMatchIdx.value = 0;
-  lastSearchText = searchText;
-
-  if (matches.value.length > 0) {
-    // Only highlight — do NOT move cursor or focus the editor
-    applyHighlights(0);
-  }
+  if (!editor.value) return;
+  (editor.value.commands as any).setSearchTerm(searchText);
+  scheduleSearchStateUpdate();
 }
 
 function navigateMatch(direction: 'next' | 'prev') {
-  if (matches.value.length === 0) return;
-  const prevIdx = activeMatchIdx.value;
+  if (!editor.value) return;
   if (direction === 'next') {
-    activeMatchIdx.value = (activeMatchIdx.value + 1) % matches.value.length;
+    (editor.value.commands as any).findNext();
   } else {
-    activeMatchIdx.value =
-      (activeMatchIdx.value - 1 + matches.value.length) % matches.value.length;
+    (editor.value.commands as any).findPrev();
   }
-  // Update highlight colors for previous and new active
-  if (quill) {
-    quill.formatText(
-      matches.value[prevIdx].index,
-      matches.value[prevIdx].length,
-      'background',
-      '#FBBF24',
-    );
-    quill.formatText(
-      matches.value[activeMatchIdx.value].index,
-      matches.value[activeMatchIdx.value].length,
-      'background',
-      '#F97316',
-    );
-  }
-  const active = matches.value[activeMatchIdx.value];
-  quill!.setSelection(active.index, active.length);
-  quill!.scrollSelectionIntoView();
+  scheduleSearchStateUpdate();
 }
 
 function replaceOne() {
-  // replaceText is accessed via FindReplaceBar's exposed ref
-  if (!quill || matches.value.length === 0) return;
-  const replaceText = findBarRef.value?.replaceText;
-  if (!replaceText) return;
-
-  const active = matches.value[activeMatchIdx.value];
-  quill.deleteText(active.index, active.length);
-  quill.insertText(active.index, replaceText);
-  // Re-search after replace
-  onFind(lastSearchText);
+  if (!editor.value) return;
+  const replaceText = findBarRef.value?.replaceText || '';
+  (editor.value.commands as any).setReplaceTerm(replaceText);
+  (editor.value.commands as any).replace();
+  scheduleSearchStateUpdate();
 }
 
 function replaceAllMatches() {
-  if (!quill || matches.value.length === 0) return;
-  const replaceText = findBarRef.value?.replaceText;
-  if (!replaceText) return;
-
-  // Replace from end to start to preserve indices
-  const sorted = [...matches.value].sort((a, b) => b.index - a.index);
-  for (const m of sorted) {
-    quill.deleteText(m.index, m.length);
-    quill.insertText(m.index, replaceText);
-  }
-  onFind(lastSearchText);
+  if (!editor.value) return;
+  const replaceText = findBarRef.value?.replaceText || '';
+  (editor.value.commands as any).setReplaceTerm(replaceText);
+  (editor.value.commands as any).replaceAll();
+  scheduleSearchStateUpdate();
 }
 
 function closeFindBar() {
-  clearHighlights();
-  matches.value = [];
-  activeMatchIdx.value = 0;
-  lastSearchText = '';
+  if (editor.value) {
+    (editor.value.commands as any).setSearchTerm('');
+  }
+  matchCount.value = 0;
+  activeMatchIndex.value = 0;
   findBarVisible.value = false;
 }
 
@@ -182,210 +124,70 @@ function onEditorKeydown(e: KeyboardEvent) {
   }
 
   if (e.key === 'Escape' && findBarVisible.value) {
-    // Only close if not typing in the find bar inputs
     if (target.closest('.find-replace-bar')) return;
     e.preventDefault();
     closeFindBar();
   }
 }
 
-function computeActiveFormats(range: { index: number; length: number } | null) {
+// ------------------------------------------------------------------
+// Format state tracking
+// ------------------------------------------------------------------
+function computeActiveFormats() {
   activeFormats.clear();
-  if (!quill || !range) return;
+  const ed = editor.value;
+  if (!ed) return;
 
-  const formats = quill.getFormat(range);
-
-  // Inline formats
-  if (formats.bold) activeFormats.add('bold');
-  if (formats.italic) activeFormats.add('italic');
-  if (formats.strike) activeFormats.add('strike');
-  if (formats.code) activeFormats.add('code');
+  if (ed.isActive('bold')) activeFormats.add('bold');
+  if (ed.isActive('italic')) activeFormats.add('italic');
+  if (ed.isActive('strike')) activeFormats.add('strike');
+  if (ed.isActive('code')) activeFormats.add('code');
+  if (ed.isActive('codeBlock')) activeFormats.add('codeBlock');
 
   // Header levels
-  if (formats.header) activeFormats.add(`header:${formats.header}`);
+  if (ed.isActive('heading', { level: 1 })) activeFormats.add('header:1');
+  if (ed.isActive('heading', { level: 2 })) activeFormats.add('header:2');
+  if (ed.isActive('heading', { level: 3 })) activeFormats.add('header:3');
 
   // List types
-  if (formats.list) activeFormats.add(`list:${formats.list}`);
+  if (ed.isActive('bulletList')) activeFormats.add('list:bullet');
+  if (ed.isActive('orderedList')) activeFormats.add('list:ordered');
 }
 
 // ------------------------------------------------------------------
-// Quill Delta → Markdown converter
+// TipTap Editor instance
 // ------------------------------------------------------------------
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type QuillAttrs = Record<string, any>;
-
-interface InlineSegment {
-  text: string;
-  attrs: QuillAttrs;
-}
-
-interface MarkdownLine {
-  segments: InlineSegment[];
-  blockAttrs: QuillAttrs;
-}
-
-function quillToMarkdown(): string {
-  if (!quill) return '';
-
-  const delta = quill.getContents();
-  if (!delta.ops || delta.ops.length === 0) return '';
-
-  // Split flat ops into lines, tracking block attrs on \n
-  const lines: MarkdownLine[] = [];
-  let currentSegments: InlineSegment[] = [];
-  let blockAttrs: QuillAttrs = {};
-
-  for (const op of delta.ops) {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const opAttrs: QuillAttrs = (op as any).attributes || {};
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const insert: string | object = (op as any).insert;
-
-    if (typeof insert !== 'string') {
-      // Skip embeds (images, etc.)
-      currentSegments.push({ text: '[mídia]', attrs: {} });
-      continue;
-    }
-
-    if (!insert.includes('\n')) {
-      // Plain text — no line break
-      currentSegments.push({ text: insert, attrs: opAttrs });
-      continue;
-    }
-
-    // Contains \n — split and finalize lines
-    const parts = insert.split('\n');
-    for (let i = 0; i < parts.length; i++) {
-      if (i < parts.length - 1) {
-        // Not the last part: end of a line
-        if (parts[i]) {
-          currentSegments.push({ text: parts[i], attrs: opAttrs });
-        }
-        lines.push({ segments: [...currentSegments], blockAttrs: { ...blockAttrs } });
-        currentSegments = [];
-        // The \n carries block-level formatting
-        blockAttrs = opAttrs;
-      } else {
-        // Last part: continues to next line (or is empty if insert ends with \n)
-        if (parts[i]) {
-          currentSegments.push({ text: parts[i], attrs: opAttrs });
-        }
-      }
-    }
-  }
-
-  // Flush remaining (last line without trailing \n)
-  if (currentSegments.length > 0) {
-    lines.push({ segments: [...currentSegments], blockAttrs: { ...blockAttrs } });
-  }
-
-  // Build Markdown output
-  const resultLines: string[] = [];
-  let orderedCounter = 1;
-
-  for (const line of lines) {
-    const attrs = line.blockAttrs;
-
-    // Reset ordered counter between non-ordered blocks
-    if (attrs.list !== 'ordered') {
-      orderedCounter = 1;
-    }
-
-    // Build inline markdown
-    let inlineText = '';
-    for (const seg of line.segments) {
-      let text = seg.text;
-      const a = seg.attrs;
-
-      // Apply inline format markers (innermost first)
-      if (a.code) text = '`' + text + '`';
-      if (a.bold) text = '**' + text + '**';
-      if (a.italic) text = '*' + text + '*';
-      if (a.strike) text = '~~' + text + '~~';
-      if (a.link) text = '[' + text + '](' + a.link + ')';
-
-      inlineText += text;
-    }
-
-    // Empty lines
-    if (!inlineText.trim()) {
-      resultLines.push('');
-      continue;
-    }
-
-    // Code block: use fenced block
-    if (attrs['code-block']) {
-      resultLines.push('```\n' + inlineText + '\n```');
-      continue;
-    }
-
-    let prefix = '';
-    let indent = '';
-
-    // Indentation level
-    if (attrs.indent) {
-      indent = '  '.repeat(Number(attrs.indent));
-    }
-
-    // Block formatting
-    if (attrs.header) {
-      prefix = '#'.repeat(Number(attrs.header)) + ' ';
-    } else if (attrs.list === 'bullet') {
-      prefix = '- ';
-    } else if (attrs.list === 'ordered') {
-      prefix = String(orderedCounter) + '. ';
-      orderedCounter++;
-    }
-
-    // Blockquote wraps everything
-    if (attrs.blockquote) {
-      prefix = '> ' + prefix;
-    }
-
-    resultLines.push(indent + prefix + inlineText);
-  }
-
-  return resultLines.join('\n').trim();
-}
-
-// ------------------------------------------------------------------
+const initialTab = getActiveTab();
+const editor = useEditor({
+  content: initialTab?.content || '',
+  extensions: [
+    StarterKit.configure({
+      codeBlock: {
+        HTMLAttributes: {
+          class: 'premium-code-block bg-neutral-955/60 border border-white/10 rounded-xl p-4 font-mono text-sm text-gray-200 overflow-x-auto my-3 select-text',
+        },
+      },
+    }),
+    Markdown,
+    SearchAndReplace.configure({
+      searchResultClass: 'search-result bg-yellow-500/25 text-yellow-200 border-b-2 border-yellow-500 rounded-sm px-0.5',
+    }),
+  ],
+  onUpdate: ({ editor }) => {
+    const md = (editor.storage.markdown as any).getMarkdown();
+    updateContent(activeTabId.value, md);
+    updateSearchState();
+  },
+  onSelectionUpdate: () => {
+    computeActiveFormats();
+  },
+});
 
 onMounted(() => {
-  if (!editorEl.value) return;
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  quill = new Quill(editorEl.value, {
-    theme: false as any,
-    modules: {
-      toolbar: false,
-    },
-  });
-
-  // Load current tab content
-  const tab = getActiveTab();
-  if (tab?.content) {
-    quill.setText(tab.content);
-  }
-
-  quill.on('text-change', () => {
-    if (!quill) return;
-    updateContent(activeTabId.value, quill.getText());
-  });
-
-  // Track active formats for toolbar highlight
-  quill.on('selection-change', (range: { index: number; length: number } | null) => {
-    computeActiveFormats(range);
-  });
-
   // Listen for transcription text insertions at cursor.
-  // Tracks insertion point locally so chunk order is always preserved:
-  // - Captures cursor position on first chunk
-  // - Inserts at tracked index (NOT re-reading cursor each time)
-  // - Advances index by chunk length
-  // - Moves cursor to end of inserted text
   cleanupInsertText = api.onInsertText((payload: { text: string; tabId?: string }) => {
-    if (!quill) return;
+    const ed = editor.value;
+    if (!ed) return;
 
     const { text, tabId } = payload;
 
@@ -394,6 +196,7 @@ onMounted(() => {
       const { tabs } = useTabs();
       const targetTab = tabs.find(t => t.id === tabId);
       if (targetTab) {
+        // Content stores Markdown directly
         updateContent(tabId, targetTab.content + text);
       }
       return;
@@ -401,25 +204,28 @@ onMounted(() => {
 
     // Initialize insertion point from current cursor on first chunk
     if (transcriptionInsertIndex === null) {
-      const sel = quill.getSelection();
-      // Quill's getLength() includes trailing \n — valid range is 0..getLength()-1
-      transcriptionInsertIndex = sel ? sel.index : Math.max(0, quill.getLength() - 1);
+      const { selection } = ed.state;
+      // selection.anchor represents absolute ProseMirror offset
+      transcriptionInsertIndex = selection ? selection.anchor : ed.state.doc.content.size;
     }
 
     // Safety clamp: if user deleted text during transcription, don't overflow
-    const maxIndex = Math.max(0, quill.getLength() - 1);
-    if (transcriptionInsertIndex > maxIndex) {
-      transcriptionInsertIndex = maxIndex;
+    const maxPos = ed.state.doc.content.size;
+    if (transcriptionInsertIndex > maxPos) {
+      transcriptionInsertIndex = maxPos;
     }
 
-    // Insert at the tracked position (NOT the current cursor)
-    quill.insertText(transcriptionInsertIndex, text, 'user');
+    // Insert at the tracked position (using commands.insertContentAt)
+    ed.commands.insertContentAt(transcriptionInsertIndex, text);
 
-    // Advance the insertion point by the length of text just inserted
-    transcriptionInsertIndex += text.length;
+    // Read the actual cursor position from ProseMirror state after insertion.
+    // ProseMirror positions include structural node offsets (paragraph tags, etc),
+    // so we cannot simply add text.length to track the position accurately.
+    const posAfterInsert = ed.state.selection.anchor;
+    transcriptionInsertIndex = posAfterInsert;
 
-    // Move cursor to end of inserted text so user sees streaming progress
-    quill.setSelection(transcriptionInsertIndex, 0);
+    // Scroll to keep inserted text visible during streaming
+    ed.commands.scrollIntoView();
   });
 
   // Reset insertion tracking when new transcription starts
@@ -428,80 +234,166 @@ onMounted(() => {
   });
 
   // Register editor API (clear + markdown export + undo)
-  registerEditor({ clearEditor, getMarkdown: quillToMarkdown, undo: undoEditor });
+  registerEditor({ clearEditor, getMarkdown, undo: undoEditor });
 
-  // Ctrl+F / Escape find bar keyboard handler
+  // Keyboard shortcut listener
   document.addEventListener('keydown', onEditorKeydown);
 });
 
 onUnmounted(() => {
   document.removeEventListener('keydown', onEditorKeydown);
-  quill = null;
   cleanupInsertText?.();
   cleanupResetInsertion?.();
 });
 
 // Sync when active tab changes or when tab content is updated in-place
 watch(activeTabId, () => {
-  if (!quill) return;
+  const ed = editor.value;
+  if (!ed) return;
   const tab = getActiveTab();
-  const newText = tab?.content ?? '';
-  // Reset insertion tracking on tab switch — insertion point is tab-specific
+  const newMarkdown = tab?.content ?? '';
+  // Reset insertion tracking on tab switch
   transcriptionInsertIndex = null;
-  if (quill.getText() !== newText + '\n') {
-    quill.setText(newText);
+  if ((ed.storage.markdown as any).getMarkdown() !== newMarkdown) {
+    ed.commands.setContent(newMarkdown, { emitUpdate: false } as any);
   }
 });
 
 function handleFormat(type: string, value?: string | boolean | number) {
-  if (!quill) return;
-  const range = quill.getSelection(true);
-  if (value !== undefined) {
-    quill.format(type, value);
-  } else {
-    const current = quill.getFormat(range);
-    quill.format(type, !current[type]);
+  const ed = editor.value;
+  if (!ed) return;
+  
+  const chain = ed.chain().focus();
+  
+  if (type === 'bold') {
+    chain.toggleBold().run();
+  } else if (type === 'italic') {
+    chain.toggleItalic().run();
+  } else if (type === 'strike') {
+    chain.toggleStrike().run();
+  } else if (type === 'code') {
+    chain.toggleCode().run();
+  } else if (type === 'codeBlock') {
+    chain.toggleCodeBlock().run();
+  } else if (type === 'header') {
+    if (value === 1) chain.toggleHeading({ level: 1 }).run();
+    else if (value === 2) chain.toggleHeading({ level: 2 }).run();
+    else if (value === 3) chain.toggleHeading({ level: 3 }).run();
+  } else if (type === 'list') {
+    if (value === 'bullet') chain.toggleBulletList().run();
+    else if (value === 'ordered') chain.toggleOrderedList().run();
   }
 }
 
 function clearEditor() {
-  if (!quill) return;
-  // Use 'user' source so the operation is recorded in Quill's history stack,
-  // enabling undo via Ctrl+Z or the programmatic undo() call.
-  quill.setText('', 'user');
+  editor.value?.commands.clearContent(true);
 }
 
 function undoEditor() {
-  if (!quill) return;
-  quill.history.undo();
+  editor.value?.commands.undo();
 }
 
-defineExpose({ clearEditor, getMarkdown: quillToMarkdown, undo: undoEditor });
+function getMarkdown() {
+  return (editor.value?.storage.markdown as any)?.getMarkdown() ?? '';
+}
+
+defineExpose({ clearEditor, getMarkdown, undo: undoEditor });
 </script>
 
 <style>
-.quill-editor {
+.ProseMirror {
   height: 100%;
+  padding: 20px;
+  line-height: 1.7;
+  outline: none;
   font-family: 'Plus Jakarta Sans', sans-serif;
   font-size: 14px;
   color: #E0E0E0;
+  overflow-y: auto;
 }
 
-.ql-container {
-  height: 100%;
-  border: none !important;
-  font-family: 'Plus Jakarta Sans', sans-serif;
-}
-
-.ql-editor {
-  height: 100%;
-  padding: 16px;
-  line-height: 1.7;
-}
-
-.ql-editor.ql-blank::before {
-  color: #9ca3af;
-  font-style: normal;
+/* Custom CSS to mimic blank/empty placeholder without extension */
+.ProseMirror p:first-child:last-child:has(br:only-child)::before {
   content: 'Comece a gravar ou escreva aqui...';
+  color: #6b7280;
+  pointer-events: none;
+  float: left;
+  height: 0;
+  font-style: normal;
+}
+
+/* Premium styling for raw blockquotes */
+.ProseMirror blockquote {
+  border-left: 3px solid rgba(59, 130, 246, 0.5);
+  padding-left: 16px;
+  margin-left: 0;
+  margin-right: 0;
+  color: #9CA3AF;
+  font-style: italic;
+}
+
+/* Bullet list and ordered list premium styling */
+.ProseMirror ul {
+  list-style-type: disc;
+  padding-left: 24px;
+  margin: 8px 0;
+}
+
+.ProseMirror ol {
+  list-style-type: decimal;
+  padding-left: 24px;
+  margin: 8px 0;
+}
+
+.ProseMirror li {
+  margin: 4px 0;
+}
+
+/* Headings premium spacing */
+.ProseMirror h1 {
+  font-size: 1.8rem;
+  font-weight: 700;
+  margin-top: 16px;
+  margin-bottom: 8px;
+  color: #FFFFFF;
+}
+
+.ProseMirror h2 {
+  font-size: 1.4rem;
+  font-weight: 600;
+  margin-top: 14px;
+  margin-bottom: 8px;
+  color: #F3F4F6;
+}
+
+.ProseMirror h3 {
+  font-size: 1.15rem;
+  font-weight: 600;
+  margin-top: 12px;
+  margin-bottom: 6px;
+  color: #E5E7EB;
+}
+
+/* Inline code styles */
+.ProseMirror code:not(pre code) {
+  background-color: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.85em;
+  color: #38bdf8;
+}
+
+/* Active Search Result styling */
+.ProseMirror .search-result {
+  transition: background-color 0.15s ease;
+}
+
+/* Active result styling (simulating focus) */
+.ProseMirror .search-result-current {
+  background-color: rgba(249, 115, 22, 0.4) !important;
+  border-bottom: 2px solid #f97316 !important;
+  color: #ffedd5 !important;
 }
 </style>
