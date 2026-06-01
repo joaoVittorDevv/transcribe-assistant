@@ -215,17 +215,18 @@ onMounted(() => {
       transcriptionInsertIndex = maxPos;
     }
 
-    // Insert raw text at the tracked position using chain API.
-    // Using chain().insertContentAt() with a plain string ensures
-    // ProseMirror treats it as unformatted text — no Markdown parsing.
-    // This prevents `---` being interpreted as <hr>, `@` as formatting, etc.
+    // Insert raw text at the tracked position using ProseMirror transaction.
+    // Using tr.insert() with schema.text() ensures the content is treated as
+    // plain text — no Markdown parsing, no node interpretation.
     const tr = ed.state.tr;
     const textNode = ed.schema.text(text);
     tr.insert(transcriptionInsertIndex, textNode);
     ed.view.dispatch(tr);
 
-    // Advance insertion index by text length (plain text = 1:1 char-to-position)
-    transcriptionInsertIndex += text.length;
+    // Read the actual cursor position from ProseMirror state after insertion.
+    // ProseMirror positions include structural offsets (paragraph tags, etc),
+    // so we cannot simply add text.length — we must read the state.
+    transcriptionInsertIndex = ed.state.selection.anchor;
 
     // Move the visual selection (cursor) to the end of the newly inserted text
     ed.commands.setTextSelection(transcriptionInsertIndex);
