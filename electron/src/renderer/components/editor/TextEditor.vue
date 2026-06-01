@@ -215,14 +215,20 @@ onMounted(() => {
       transcriptionInsertIndex = maxPos;
     }
 
-    // Insert at the tracked position (using commands.insertContentAt)
-    ed.commands.insertContentAt(transcriptionInsertIndex, text);
+    // Insert raw text at the tracked position using chain API.
+    // Using chain().insertContentAt() with a plain string ensures
+    // ProseMirror treats it as unformatted text — no Markdown parsing.
+    // This prevents `---` being interpreted as <hr>, `@` as formatting, etc.
+    const tr = ed.state.tr;
+    const textNode = ed.schema.text(text);
+    tr.insert(transcriptionInsertIndex, textNode);
+    ed.view.dispatch(tr);
 
-    // Read the actual cursor position from ProseMirror state after insertion.
-    // ProseMirror positions include structural node offsets (paragraph tags, etc),
-    // so we cannot simply add text.length to track the position accurately.
-    const posAfterInsert = ed.state.selection.anchor;
-    transcriptionInsertIndex = posAfterInsert;
+    // Advance insertion index by text length (plain text = 1:1 char-to-position)
+    transcriptionInsertIndex += text.length;
+
+    // Move the visual selection (cursor) to the end of the newly inserted text
+    ed.commands.setTextSelection(transcriptionInsertIndex);
 
     // Scroll to keep inserted text visible during streaming
     ed.commands.scrollIntoView();
@@ -246,18 +252,24 @@ onUnmounted(() => {
   cleanupResetInsertion?.();
 });
 
-// Sync when active tab changes or when tab content is updated in-place
-watch(activeTabId, () => {
-  const ed = editor.value;
-  if (!ed) return;
-  const tab = getActiveTab();
-  const newMarkdown = tab?.content ?? '';
-  // Reset insertion tracking on tab switch
+// Reset insertion tracking on tab switch
+watch(activeTabId, (newId, oldId) => {
+  if (newId === oldId) return;
   transcriptionInsertIndex = null;
-  if ((ed.storage.markdown as any).getMarkdown() !== newMarkdown) {
-    ed.commands.setContent(newMarkdown, { emitUpdate: false } as any);
-  }
 });
+
+// Sync when tab content is updated in-place (e.g., Reset/Clear button)
+watch(
+  () => getActiveTab()?.content,
+  (newMarkdown) => {
+    const ed = editor.value;
+    if (!ed) return;
+    const currentMarkdown = (ed.storage.markdown as any).getMarkdown();
+    if (newMarkdown !== undefined && currentMarkdown !== newMarkdown) {
+      ed.commands.setContent(newMarkdown, { emitUpdate: false } as any);
+    }
+  }
+);
 
 function handleFormat(type: string, value?: string | boolean | number) {
   const ed = editor.value;
@@ -286,7 +298,12 @@ function handleFormat(type: string, value?: string | boolean | number) {
 }
 
 function clearEditor() {
-  editor.value?.commands.clearContent(true);
+  const ed = editor.value;
+  if (!ed) return;
+  // Clear tab store first to prevent watcher from restoring content
+  updateContent(activeTabId.value, '');
+  // Clear editor without emitting update (avoids sync loop)
+  ed.commands.clearContent(false);
 }
 
 function undoEditor() {
@@ -294,7 +311,10 @@ function undoEditor() {
 }
 
 function getMarkdown() {
-  return (editor.value?.storage.markdown as any)?.getMarkdown() ?? '';
+  if (!editor.value) return '';
+  // Access Markdown extension API with safe fallback
+  const md = editor.value.storage.markdown?.getMarkdown?.();
+  return md ?? editor.value.state.doc.textContent;
 }
 
 defineExpose({ clearEditor, getMarkdown, undo: undoEditor });
