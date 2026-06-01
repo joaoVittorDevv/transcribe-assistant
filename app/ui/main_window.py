@@ -33,6 +33,9 @@ from app.ui.markdown_editor import MarkdownEditor
 from app.ui.native_dialog import open_audio_file
 from app.ui.sidebar import Sidebar
 from app.ui.vu_meter import VUMeter
+from app.utils.tray_manager import TrayManager
+from app.utils.notification_manager import send_notification
+import app.config as config
 
 # Queue used to safely post events from worker threads to the UI thread
 _ui_queue: queue.Queue = queue.Queue()
@@ -108,6 +111,20 @@ class MainWindow(ctk.CTk):
         from app.config import GOOGLE_API_KEY, GROQ_API_KEY
         if not GOOGLE_API_KEY or not GROQ_API_KEY:
             self.after(500, self._open_settings)
+
+        # --- System Tray Setup ---
+        self._tray_manager = TrayManager(
+            on_restore_clicked=self._restore_from_tray,
+            on_stop_clicked=self._stop_recording_from_tray,
+            on_pause_clicked=self._pause_recording_from_tray,
+            on_exit_clicked=self._exit_app_completely
+        )
+        if self._tray_manager.is_available() and getattr(config, "TRAY_ENABLED", False):
+            self._tray_manager.start()
+
+        # --- Active Recording reminder tracking ---
+        self._last_alert_time: float = 0.0
+        self._check_recording_alert_loop()
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -530,6 +547,16 @@ class MainWindow(ctk.CTk):
         self._record_start_time = time.time()
         self._recorder.start_recording(mode=self._audio_mode)
 
+        # Update tray icon and trigger start notification
+        self._tray_manager.update_state("recording", is_paused=False)
+        alert_types = getattr(config, "ALERT_TRANSCRIPTION_TYPES", "")
+        if "realtime" in alert_types:
+            send_notification(
+                "Gravação Iniciada",
+                "O Assistente de Transcrição começou a gravar o áudio em segundo plano."
+            )
+        self._last_alert_time = time.time()
+
         # DEBUG - REMOVE LATER
         print("[DEBUG] MainWindow: gravacao iniciada")
 
@@ -561,6 +588,9 @@ class MainWindow(ctk.CTk):
             text=i18n.t("ui.status.transcribing"), text_color="#eab308"
         )
 
+        # Update system tray status
+        self._tray_manager.update_state("transcribing")
+
         # DEBUG - REMOVE LATER
         print("[DEBUG] MainWindow: gravacao parada, iniciando transcricao")
 
@@ -590,6 +620,9 @@ class MainWindow(ctk.CTk):
         self._is_recording = False
         self._cancel_btn.pack_forget()
         self._current_request_id += 1  # Invalida a requisição atual
+
+        # Reset tray status
+        self._tray_manager.update_state("idle")
 
         # DEBUG - REMOVE LATER
         print("[DEBUG] MainWindow: gravacao cancelada")
@@ -751,6 +784,15 @@ class MainWindow(ctk.CTk):
             text=i18n.t("ui.status.transcription_done"), text_color="#22c55e"
         )
 
+        # Update tray status and trigger final notification
+        self._tray_manager.update_state("idle")
+        alert_types = getattr(config, "ALERT_TRANSCRIPTION_TYPES", "")
+        if "realtime" in alert_types or "file" in alert_types:
+            send_notification(
+                "Transcrição Concluída",
+                f"O áudio da sessão '{target_tab}' foi transcrito com sucesso."
+            )
+
     def _finish_transcription_error(self, payload: tuple[str, int]) -> None:
         message, request_id = payload
         if request_id != self._current_request_id:
@@ -762,6 +804,13 @@ class MainWindow(ctk.CTk):
         self._status_label.configure(
             text=i18n.t("ui.status.error", message=message),
             text_color="#ef4444",
+        )
+
+        # Update tray state to error and send alert notification
+        self._tray_manager.update_state("error")
+        send_notification(
+            "Erro de Transcrição",
+            f"Ocorreu um erro ao transcrever o áudio: {message}"
         )
 
     def _restore_record_button(self) -> None:
@@ -783,6 +832,8 @@ class MainWindow(ctk.CTk):
         )
         self._import_btn.configure(state="normal")
         self._vu_meter.set_level(0.0)
+        # Re-set tray icon to idle
+        self._tray_manager.update_state("idle")
 
     def _finish_import_rejected(self, reason: str) -> None:
         """Handle rejected audio import."""
@@ -1031,6 +1082,12 @@ class MainWindow(ctk.CTk):
     def _on_settings_saved(self) -> None:
         """Refresh labels when settings are saved."""
         self.refresh_labels()
+        # Synchronize System Tray startup/shutdown based on new configuration
+        if self._tray_manager.is_available():
+            if getattr(config, "TRAY_ENABLED", False):
+                self._tray_manager.start()
+            else:
+                self._tray_manager.stop()
 
     # ==================================================================
     # Audio file import
@@ -1140,10 +1197,76 @@ class MainWindow(ctk.CTk):
     # ==================================================================
 
     def _on_close(self) -> None:
+        # If system tray is enabled and available, minimize/hide to tray instead of exiting
+        if self._tray_manager.is_available() and getattr(config, "TRAY_ENABLED", False):
+            self.withdraw()
+            send_notification(
+                "Rodando em segundo plano",
+                "O Assistente de Transcrição foi minimizado para a bandeja do sistema."
+            )
+        else:
+            self._exit_app_completely()
+
+    def _restore_from_tray(self) -> None:
+        """Safely restore and focus the main window from the System Tray thread."""
+        self.after(0, self._restore_window_safely)
+
+    def _restore_window_safely(self) -> None:
+        self.deiconify()
+        self.state("normal")
+        self.focus_force()
+
+    def _stop_recording_from_tray(self) -> None:
+        """Safely trigger recording stop from the System Tray thread."""
         if self._is_recording:
-            self._recorder.stop_recording()
+            self.after(0, self._stop_recording)
+
+    def _pause_recording_from_tray(self) -> None:
+        """Notify user that recording pause is currently unsupported."""
+        send_notification(
+            "Função Indisponível",
+            "A pausa de gravação não é suportada pela placa de som local. Use Parar para transcrever."
+        )
+
+    def _exit_app_completely(self) -> None:
+        """Safely shut down all background threads and release resources."""
+        if self._is_recording:
+            try:
+                self._recorder.stop_recording()
+            except Exception:
+                pass
         self._network_monitor.stop()
+        self._tray_manager.stop()
         self.destroy()
+
+    def _check_recording_alert_loop(self) -> None:
+        """Background loop to alert the user if recording runs for too long."""
+        if self._is_recording and self._record_start_time is not None:
+            elapsed_minutes = (time.time() - self._record_start_time) / 60.0
+            
+            # Check if background alerts are globally enabled
+            if getattr(config, "PERSISTENT_NOTIFICATIONS_ENABLED", True):
+                alert_types = getattr(config, "ALERT_TRANSCRIPTION_TYPES", "")
+                
+                # Check if the active recording mode triggers alerts
+                is_realtime = self._audio_mode == "mic"
+                should_alert = (is_realtime and "realtime" in alert_types) or (not is_realtime and "file" in alert_types)
+                
+                if should_alert:
+                    interval = getattr(config, "ALERT_INTERVAL", 15)
+                    time_since_last = (time.time() - self._last_alert_time) / 60.0 if self._last_alert_time else elapsed_minutes
+                    
+                    # Alert if time exceeded interval, and window is either minimized or has lost focus
+                    is_minimized = self.state() == "iconified" or not self.focus_get()
+                    if elapsed_minutes >= interval and (time_since_last >= interval or self._last_alert_time == 0.0) and is_minimized:
+                        self._last_alert_time = time.time()
+                        send_notification(
+                            "🎙️ Gravação em Progresso",
+                            f"O gravador está ativo há {int(elapsed_minutes)} minutos em segundo plano."
+                        )
+                        
+        # Reschedule check every 15 seconds
+        self.after(15000, self._check_recording_alert_loop)
 
 
 # ======================================================================

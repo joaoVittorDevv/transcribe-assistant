@@ -1,4 +1,4 @@
-import { ref, computed, onUnmounted } from 'vue';
+import { ref, computed, onUnmounted, watch } from 'vue';
 import { useTabs } from './useTabs';
 import { useDefaultPrompt } from './useDefaultPrompt';
 import { useProvider } from './useProvider';
@@ -137,6 +137,7 @@ export function useTranscriptionState() {
           console.error('[transcription] dual error:', data);
           const errorMsg = data.slice(7).trim() || 'Erro desconhecido na transcrição';
           setPhase('error' as ProgressPhase, errorMsg);
+          api.updateAudioState('error');
           api.resetInsertionPoint();
           return 'return';
         }
@@ -192,6 +193,7 @@ export function useTranscriptionState() {
       const errMsg = err?.message || 'Erro desconhecido';
       // Preserve audio paths in error message for debugging
       setPhase('error', `Erro na transcrição: ${errMsg}\n\nÁudios preservados em:\n• Mic: ${micPath}\n• Sys: ${sysPath}`);
+      api.updateAudioState('error');
       return;
     }
     setPhase('error', 'Conexão perdida com o servidor de transcrição.');
@@ -314,6 +316,7 @@ export function useTranscriptionState() {
           console.error('[transcription]', data);
           const errorMsg = data.slice(7).trim() || 'Erro desconhecido na transcrição';
           setPhase('error' as ProgressPhase, errorMsg);
+          api.updateAudioState('error');
           // Reset editor insertion tracking so next transcription re-captures cursor
           api.resetInsertionPoint();
           // Keep bar visible — user must dismiss manually
@@ -375,6 +378,7 @@ export function useTranscriptionState() {
       }
       console.error('[transcription] error:', err);
       setPhase('error', err?.message || 'Erro durante a transcrição');
+      api.updateAudioState('error');
       return;
     }
     // Only reached if stream ends without [DONE] or [ERROR] — show error, don't auto-close
@@ -547,6 +551,7 @@ export function useTranscriptionState() {
       }
       const { setPhase } = useTranscriptionProgress();
       setPhase('error', `Erro no dispositivo de áudio: ${status.error}`);
+      api.updateAudioState('error');
       return;
     }
 
@@ -573,11 +578,24 @@ export function useTranscriptionState() {
     }
   });
 
+  // Watch state changes to update Tray icon via IPC
+  watch(state, (newState) => {
+    api.updateAudioState(newState.toLowerCase() as 'idle' | 'recording' | 'transcribing');
+  });
+
+  // Listen for stop from system tray
+  const cleanupStopFromTray = api.onStopRecordingFromTray(() => {
+    if (state.value === 'RECORDING') {
+      stopAndTranscribe();
+    }
+  });
+ 
   onUnmounted(() => {
     if (timerInterval) clearInterval(timerInterval);
     abortController?.abort();
     cleanupRms?.();
     cleanupStatus?.();
+    cleanupStopFromTray?.();
   });
 
   // Import audio file and transcribe with unified progress bar
@@ -665,6 +683,7 @@ export function useTranscriptionState() {
           console.error('[transcription] import error:', data);
           const errorMsg = data.slice(7).trim() || 'Erro desconhecido na transcrição';
           setPhase('error' as ProgressPhase, errorMsg);
+          api.updateAudioState('error');
           api.resetInsertionPoint();
           return 'return';
         }
@@ -716,6 +735,7 @@ export function useTranscriptionState() {
       }
       console.error('[transcription] import error:', err);
       setPhase('error', err?.message || 'Erro durante a transcrição');
+      api.updateAudioState('error');
       return;
     }
     setPhase('error', 'Conexão perdida com o servidor de transcrição.');

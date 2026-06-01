@@ -19,6 +19,9 @@ export interface ElectronAPI {
   onInsertText(callback: (payload: { text: string; tabId?: string }) => void): () => void;
   resetInsertionPoint(): void;
   onResetInsertionPoint(callback: () => void): () => void;
+  updateSettingsTray(settings: { enabled: boolean; notificationsEnabled: boolean; interval: number; types: string }): void;
+  updateAudioState(state: 'idle' | 'recording' | 'transcribing' | 'error'): void;
+  onStopRecordingFromTray(callback: () => void): () => void;
 }
 
 declare global {

@@ -65,6 +65,13 @@
   "settings.check_interval": "Intervalo de Checagem (ms)",
   "settings.language": "Idioma Global",
   "settings.save_success": "Configurações salvas!",
+  "settings.alerts.section_title": "Alertas & Notificações",
+  "settings.alerts.tray_enabled": "Habilitar ícone na bandeja do sistema (Tray)",
+  "settings.alerts.notifications_enabled": "Habilitar alertas de lembrete em segundo plano",
+  "settings.alerts.interval_label": "Intervalo de lembretes (minutos)",
+  "settings.alerts.types_label": "Tipos de áudio sujeitos a alertas",
+  "settings.alerts.types_realtime": "Gravações em tempo real",
+  "settings.alerts.types_file": "Importações de arquivos",
   "toast.content_cleared": "Conteúdo da aba limpo.",
   "toast.undo": "Desfazer"
 }

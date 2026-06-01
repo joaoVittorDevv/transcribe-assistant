@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog, Tray, Menu, Notification, nativeImage } from 'electron';
 import { spawn, type ChildProcess } from 'child_process';
 import path from 'path';
 import * as url from 'url';
@@ -38,6 +38,157 @@ let mainWindow: BrowserWindow | null = null;
 // Bug 1b fix: queue pending commands while engine is restarting
 let engineRestarting = false;
 const pendingCommands: Array<{ cmd: { action: string; mode?: string }; resolve: (result: boolean) => void }> = [];
+
+// ---------------------------------------------------------------------------
+// System Tray and Background Notifications Configuration
+// ---------------------------------------------------------------------------
+let tray: Tray | null = null;
+let traySettings = {
+  enabled: false,
+  notificationsEnabled: true,
+  interval: 15,
+  types: 'realtime',
+};
+let currentAudioState: 'idle' | 'recording' | 'transcribing' | 'error' = 'idle';
+let recordingStartTime: number | null = null;
+let alertIntervalTimer: NodeJS.Timeout | null = null;
+let isQuitting = false;
+
+function getTrayIconPath(state: 'idle' | 'recording' | 'transcribing' | 'error'): string {
+  const iconName = `tray_${state}.png`;
+  const devPath = path.resolve(__dirname, '../../../../electron/assets', iconName);
+  const prodPath = path.join(process.resourcesPath, 'assets', iconName);
+  
+  if (app.isPackaged) {
+    if (fs.existsSync(prodPath)) {
+      return prodPath;
+    }
+    return path.join(process.resourcesPath, 'assets/icon.png');
+  }
+  return devPath;
+}
+
+function updateTrayMenu(): void {
+  if (!tray) return;
+
+  const contextMenu = Menu.buildFromTemplate([
+    {
+      label: 'Exibir Assistente',
+      click: () => {
+        if (mainWindow) {
+          mainWindow.show();
+          mainWindow.focus();
+        }
+      }
+    },
+    {
+      label: 'Parar Gravação & Transcrever',
+      enabled: currentAudioState === 'recording',
+      click: () => {
+        mainWindow?.webContents.send('stop-recording-from-tray');
+      }
+    },
+    { type: 'separator' },
+    {
+      label: 'Sair',
+      click: () => {
+        isQuitting = true;
+        app.quit();
+      }
+    }
+  ]);
+
+  tray.setContextMenu(contextMenu);
+
+  let tooltip = 'Assistente de Transcrição';
+  if (currentAudioState === 'recording') {
+    tooltip = 'Assistente de Transcrição - Gravando...';
+  } else if (currentAudioState === 'transcribing') {
+    tooltip = 'Assistente de Transcrição - Transcrevendo...';
+  } else if (currentAudioState === 'error') {
+    tooltip = 'Assistente de Transcrição - Erro!';
+  }
+  tray.setToolTip(tooltip);
+}
+
+function setupTray(): void {
+  if (!traySettings.enabled) {
+    if (tray) {
+      tray.destroy();
+      tray = null;
+    }
+    return;
+  }
+
+  const iconPath = getTrayIconPath(currentAudioState);
+  const image = nativeImage.createFromPath(iconPath);
+
+  if (!tray) {
+    tray = new Tray(image);
+    tray.on('click', () => {
+      if (mainWindow) {
+        if (mainWindow.isVisible()) {
+          mainWindow.focus();
+        } else {
+          mainWindow.show();
+        }
+      }
+    });
+  } else {
+    tray.setImage(image);
+  }
+
+  updateTrayMenu();
+}
+
+function stopAlertTimer(): void {
+  if (alertIntervalTimer) {
+    clearInterval(alertIntervalTimer);
+    alertIntervalTimer = null;
+  }
+  recordingStartTime = null;
+}
+
+function startAlertTimer(): void {
+  stopAlertTimer();
+  recordingStartTime = Date.now();
+  
+  const intervalMs = traySettings.interval * 60 * 1000;
+  
+  alertIntervalTimer = setInterval(() => {
+    const isBackground = mainWindow ? (!mainWindow.isVisible() || !mainWindow.isFocused()) : true;
+    
+    if (currentAudioState === 'recording' && isBackground && traySettings.notificationsEnabled) {
+      const elapsedMinutes = Math.round((Date.now() - (recordingStartTime || Date.now())) / 60000);
+      
+      const notification = new Notification({
+        title: 'Gravação em Andamento',
+        body: `O Transcribe Assistant está gravando há ${elapsedMinutes} minutos. Clique para abrir.`
+      });
+      notification.on('click', () => {
+        if (mainWindow) {
+          mainWindow.show();
+          mainWindow.focus();
+        }
+      });
+      notification.show();
+    }
+  }, intervalMs);
+}
+
+function updateTrayState(state: 'idle' | 'recording' | 'transcribing' | 'error'): void {
+  currentAudioState = state;
+  
+  if (state === 'recording') {
+    startAlertTimer();
+  } else {
+    stopAlertTimer();
+  }
+
+  if (traySettings.enabled) {
+    setupTray();
+  }
+}
 
 function startAudioEngine(): void {
   if (audioEngine) return;
@@ -192,6 +343,19 @@ function setupIpcHandlers(): void {
       return false;
     }
   });
+
+  ipcMain.on('update-settings-tray', (_event, settings) => {
+    traySettings = settings;
+    setupTray();
+    
+    if (currentAudioState === 'recording') {
+      startAlertTimer();
+    }
+  });
+
+  ipcMain.on('update-audio-state', (_event, state) => {
+    updateTrayState(state);
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -224,6 +388,20 @@ function createWindow(): void {
     mainWindow.loadFile(path.join(__dirname, `../../renderer/${MAIN_WINDOW_VITE_NAME}/index.html`));
   }
 
+  mainWindow.on('close', (event) => {
+    if (traySettings.enabled && !isQuitting) {
+      event.preventDefault();
+      mainWindow?.hide();
+      
+      if (traySettings.notificationsEnabled) {
+        new Notification({
+          title: 'Transcribe Assistant',
+          body: 'O aplicativo foi minimizado para a bandeja do sistema e continua em execução.'
+        }).show();
+      }
+    }
+  });
+
   mainWindow.on('closed', () => {
     stopAudioEngine();
     mainWindow = null;
@@ -251,6 +429,11 @@ app.on('window-all-closed', () => {
 });
 
 app.on('before-quit', () => {
+  isQuitting = true;
+  if (tray) {
+    tray.destroy();
+    tray = null;
+  }
   stopAudioEngine();
   stopServer();
 });

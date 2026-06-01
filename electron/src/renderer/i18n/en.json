@@ -65,6 +65,13 @@
   "settings.check_interval": "Check Interval (ms)",
   "settings.language": "Global Language",
   "settings.save_success": "Settings saved!",
+  "settings.alerts.section_title": "Alertas & Notifications",
+  "settings.alerts.tray_enabled": "Enable system tray icon (Tray)",
+  "settings.alerts.notifications_enabled": "Enable background reminder alerts",
+  "settings.alerts.interval_label": "Reminder interval (minutes)",
+  "settings.alerts.types_label": "Audio types subject to alerts",
+  "settings.alerts.types_realtime": "Real-time recordings",
+  "settings.alerts.types_file": "File imports",
   "toast.content_cleared": "Tab content cleared.",
   "toast.undo": "Undo"
 }

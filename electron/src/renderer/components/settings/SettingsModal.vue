@@ -291,6 +291,81 @@
                 />
               </div>
             </div>
+
+            <!-- Alertas e Notificações (Silk Theme) -->
+            <div class="border-t border-white/5 pt-4 flex flex-col gap-4">
+              <h3 class="text-xs font-plus-jakarta font-bold text-text-primary">
+                {{ t('settings.alerts.section_title') }}
+              </h3>
+              
+              <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <!-- Toggle Tray -->
+                <div class="flex items-center justify-between bg-white/5 p-3 rounded-lg border border-white/5">
+                  <span class="text-xs text-text-muted font-plus-jakarta font-medium">
+                    {{ t('settings.alerts.tray_enabled') }}
+                  </span>
+                  <label class="relative inline-flex items-center cursor-pointer">
+                    <input type="checkbox" v-model="trayEnabled" class="sr-only peer" />
+                    <div class="w-8 h-4 bg-white/10 rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-0.5 after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-accent-blue"></div>
+                  </label>
+                </div>
+
+                <!-- Toggle Notifications -->
+                <div class="flex items-center justify-between bg-white/5 p-3 rounded-lg border border-white/5">
+                  <span class="text-xs text-text-muted font-plus-jakarta font-medium">
+                    {{ t('settings.alerts.notifications_enabled') }}
+                  </span>
+                  <label class="relative inline-flex items-center cursor-pointer">
+                    <input type="checkbox" v-model="persistentNotificationsEnabled" class="sr-only peer" />
+                    <div class="w-8 h-4 bg-white/10 rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-0.5 after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-accent-blue"></div>
+                  </label>
+                </div>
+              </div>
+
+              <!-- Interval Slider -->
+              <div class="bg-white/5 p-3 rounded-lg border border-white/5">
+                <div class="flex justify-between items-center mb-2">
+                  <label class="text-xs text-text-muted font-plus-jakarta font-medium">
+                    {{ t('settings.alerts.interval_label') }}
+                  </label>
+                  <span class="text-xs text-accent-blue font-bold font-plus-jakarta">{{ alertInterval }}m</span>
+                </div>
+                <input
+                  v-model="alertInterval"
+                  type="range"
+                  min="1"
+                  max="60"
+                  class="w-full h-1 bg-white/10 rounded-lg appearance-none cursor-pointer accent-accent-blue"
+                />
+              </div>
+
+              <!-- Transcription Types -->
+              <div class="bg-white/5 p-3 rounded-lg border border-white/5">
+                <label class="block text-xs text-text-muted font-plus-jakarta font-medium mb-3">
+                  {{ t('settings.alerts.types_label') }}
+                </label>
+                <div class="flex gap-6">
+                  <label class="inline-flex items-center gap-2 text-xs text-text-muted font-plus-jakarta cursor-pointer">
+                    <input
+                      type="checkbox"
+                      value="realtime"
+                      v-model="alertTranscriptionTypes"
+                      class="rounded bg-white/5 border-white/10 text-accent-blue focus:ring-accent-blue/30"
+                    />
+                    {{ t('settings.alerts.types_realtime') }}
+                  </label>
+                  <label class="inline-flex items-center gap-2 text-xs text-text-muted font-plus-jakarta cursor-pointer">
+                    <input
+                      type="checkbox"
+                      value="file"
+                      v-model="alertTranscriptionTypes"
+                      class="rounded bg-white/5 border-white/10 text-accent-blue focus:ring-accent-blue/30"
+                    />
+                    {{ t('settings.alerts.types_file') }}
+                  </label>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -343,6 +418,12 @@ const networkPort = ref<number | string>('');
 const networkCheckInterval = ref<number | string>('');
 const appLanguage = ref('pt');
 
+// Tray & Notification Settings refs
+const trayEnabled = ref(false);
+const persistentNotificationsEnabled = ref(true);
+const alertInterval = ref(15);
+const alertTranscriptionTypes = ref<string[]>(['realtime']);
+
 // Key Visibility
 const showGeminiKey = ref(false);
 const showGroqKey = ref(false);
@@ -385,6 +466,13 @@ async function loadSettings() {
     networkPort.value = data.network_ping_port;
     networkCheckInterval.value = data.network_check_interval;
     appLanguage.value = data.app_language || 'pt';
+
+    // Load alerts and tray states
+    trayEnabled.value = data.tray_enabled ?? false;
+    persistentNotificationsEnabled.value = data.persistent_notifications_enabled ?? true;
+    alertInterval.value = data.alert_interval ?? 15;
+    const alertTypes = data.alert_transcription_types || 'realtime';
+    alertTranscriptionTypes.value = alertTypes.split(',').filter(Boolean);
 
     // Fetch lists of models
     await fetchModels();
@@ -473,10 +561,24 @@ async function save() {
         network_ping_host: networkHost.value,
         network_ping_port: parseInt(String(networkPort.value)) || 18763,
         network_check_interval: parseInt(String(networkCheckInterval.value)) || 5000,
+        tray_enabled: trayEnabled.value,
+        persistent_notifications_enabled: persistentNotificationsEnabled.value,
+        alert_interval: parseInt(String(alertInterval.value)) || 15,
+        alert_transcription_types: alertTranscriptionTypes.value.join(','),
       }),
     });
 
     if (promptRes.ok && settingsRes.ok) {
+      // Notify electron main process
+      if (window.electronAPI && window.electronAPI.updateSettingsTray) {
+        window.electronAPI.updateSettingsTray({
+          enabled: trayEnabled.value,
+          notificationsEnabled: persistentNotificationsEnabled.value,
+          interval: parseInt(String(alertInterval.value)) || 15,
+          types: alertTranscriptionTypes.value.join(',')
+        });
+      }
+
       saved.value = true;
       setTimeout(() => {
         saved.value = false;

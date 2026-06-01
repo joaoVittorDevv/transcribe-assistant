@@ -47,6 +47,12 @@ DATABASE_PATH: Path = _ROOT / _optional("DATABASE_PATH", "transcriber_data.db")
 VAULT_PATH: Path = _ROOT / "Vault"
 DUAL_INTERMEDIARY_PATH: Path = _ROOT / "DualRecordings"
 
+# System Tray & Notification config
+TRAY_ENABLED: bool = False
+PERSISTENT_NOTIFICATIONS_ENABLED: bool = True
+ALERT_TRANSCRIPTION_TYPES: str = "realtime"
+ALERT_INTERVAL: int = 15
+
 
 def load_all_settings() -> None:
     """Load configuration variables from the database, or migrate from .env on first run."""
@@ -54,6 +60,7 @@ def load_all_settings() -> None:
     global GROQ_API_KEY, GROQ_REVIEW_MODEL, WHISPER_MODEL, WHISPER_DEVICE
     global WHISPER_COMPUTE_TYPE, NETWORK_PING_HOST, NETWORK_PING_PORT
     global NETWORK_CHECK_INTERVAL, VAULT_PATH, DUAL_INTERMEDIARY_PATH
+    global TRAY_ENABLED, PERSISTENT_NOTIFICATIONS_ENABLED, ALERT_TRANSCRIPTION_TYPES, ALERT_INTERVAL
 
     # Lazy imports to avoid circular dependency with database.py
     import app.database as db
@@ -102,6 +109,12 @@ def load_all_settings() -> None:
         db.set_setting("NETWORK_CHECK_INTERVAL", net_interval)
         db.set_setting("VAULT_PATH", vault_path)
         db.set_setting("DUAL_INTERMEDIARY_PATH", dual_path)
+        
+        # System Tray & Notifications default config
+        db.set_setting("TRAY_ENABLED", "False")
+        db.set_setting("PERSISTENT_NOTIFICATIONS_ENABLED", "True")
+        db.set_setting("ALERT_TRANSCRIPTION_TYPES", "realtime")
+        db.set_setting("ALERT_INTERVAL", "15")
 
     # Read active values from DB and apply them to module globals
     enc_google_db = db.get_setting("GOOGLE_API_KEY", "")
@@ -125,6 +138,12 @@ def load_all_settings() -> None:
     VAULT_PATH = _ROOT / db.get_setting("VAULT_PATH", "Vault")
     DUAL_INTERMEDIARY_PATH = _ROOT / db.get_setting("DUAL_INTERMEDIARY_PATH", "DualRecordings")
 
+    # Load tray and alerts config
+    TRAY_ENABLED = db.get_setting("TRAY_ENABLED", "False").lower() == "true"
+    PERSISTENT_NOTIFICATIONS_ENABLED = db.get_setting("PERSISTENT_NOTIFICATIONS_ENABLED", "True").lower() == "true"
+    ALERT_TRANSCRIPTION_TYPES = db.get_setting("ALERT_TRANSCRIPTION_TYPES", "realtime")
+    ALERT_INTERVAL = int(db.get_setting("ALERT_INTERVAL", "15"))
+
 
 def reload_config() -> None:
     """Reload all settings from the database and propagate changes to other imported modules."""
@@ -139,7 +158,9 @@ def reload_config() -> None:
                 "GROQ_API_KEY", "GROQ_REVIEW_MODEL", "APP_LANGUAGE",
                 "NETWORK_PING_HOST", "NETWORK_PING_PORT", "NETWORK_CHECK_INTERVAL",
                 "WHISPER_MODEL", "WHISPER_DEVICE", "WHISPER_COMPUTE_TYPE",
-                "VAULT_PATH", "DUAL_INTERMEDIARY_PATH"
+                "VAULT_PATH", "DUAL_INTERMEDIARY_PATH",
+                "TRAY_ENABLED", "PERSISTENT_NOTIFICATIONS_ENABLED",
+                "ALERT_TRANSCRIPTION_TYPES", "ALERT_INTERVAL"
             ]:
                 if hasattr(module, var_name):
                     setattr(module, var_name, getattr(sys.modules["app.config"], var_name))

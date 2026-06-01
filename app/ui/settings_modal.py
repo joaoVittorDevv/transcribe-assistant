@@ -221,6 +221,84 @@ class SettingsModal(ctk.CTkToplevel):
         self._dual_browse_btn.grid(row=3, column=2, padx=(0, 10), pady=2)
 
         # -------------------------------------------------------------------
+        # Seção Alertas e Notificações (Silk style)
+        # -------------------------------------------------------------------
+        alerts_frame = ctk.CTkFrame(self._scroll_frame)
+        alerts_frame.grid(row=5, column=0, sticky="ew", padx=5, pady=10)
+        alerts_frame.grid_columnconfigure(1, weight=1)
+
+        alerts_title = ctk.CTkLabel(
+            alerts_frame,
+            text=i18n.t("ui.settings.alerts_section"),
+            font=ctk.CTkFont(weight="bold", size=14)
+        )
+        alerts_title.grid(row=0, column=0, columnspan=2, sticky="w", padx=10, pady=10)
+
+        # Tray Integration Check
+        from app.utils.tray_manager import PYS_AVAILABLE
+        self._tray_enabled_var = ctk.BooleanVar()
+        self._tray_switch = ctk.CTkSwitch(
+            alerts_frame,
+            text=i18n.t("ui.settings.tray_enabled_label"),
+            variable=self._tray_enabled_var
+        )
+        self._tray_switch.grid(row=1, column=0, columnspan=2, sticky="w", padx=10, pady=5)
+        
+        if not PYS_AVAILABLE:
+            self._tray_switch.configure(
+                state="disabled",
+                text=f"{i18n.t('ui.settings.tray_enabled_label')} ({i18n.t('ui.settings.tray_disabled_warning')})"
+            )
+
+        # Background Notifications Enable
+        self._notifs_enabled_var = ctk.BooleanVar()
+        self._notifs_switch = ctk.CTkSwitch(
+            alerts_frame,
+            text=i18n.t("ui.settings.notifications_enabled_label"),
+            variable=self._notifs_enabled_var
+        )
+        self._notifs_switch.grid(row=2, column=0, columnspan=2, sticky="w", padx=10, pady=5)
+
+        # Reminder Interval Slider
+        self._interval_label = ctk.CTkLabel(
+            alerts_frame,
+            text=i18n.t("ui.settings.alert_interval_label", minutes=15)
+        )
+        self._interval_label.grid(row=3, column=0, sticky="w", padx=10, pady=(5, 0))
+
+        self._interval_slider = ctk.CTkSlider(
+            alerts_frame,
+            from_=1,
+            to=60,
+            number_of_steps=59,
+            command=self._on_slider_change
+        )
+        self._interval_slider.grid(row=4, column=0, columnspan=2, sticky="ew", padx=10, pady=(0, 5))
+
+        # Audio Types Checklist
+        types_label = ctk.CTkLabel(
+            alerts_frame,
+            text=i18n.t("ui.settings.alert_types_label")
+        )
+        types_label.grid(row=5, column=0, sticky="w", padx=10, pady=(5, 0))
+
+        self._type_realtime_var = ctk.BooleanVar(value=True)
+        self._type_realtime_check = ctk.CTkCheckBox(
+            alerts_frame,
+            text=i18n.t("ui.settings.alert_types_realtime"),
+            variable=self._type_realtime_var
+        )
+        self._type_realtime_check.grid(row=6, column=0, sticky="w", padx=20, pady=2)
+
+        self._type_file_var = ctk.BooleanVar(value=False)
+        self._type_file_check = ctk.CTkCheckBox(
+            alerts_frame,
+            text=i18n.t("ui.settings.alert_types_file"),
+            variable=self._type_file_var
+        )
+        self._type_file_check.grid(row=7, column=0, sticky="w", padx=20, pady=2)
+
+        # -------------------------------------------------------------------
         # Action Buttons (Bottom Bar)
         # -------------------------------------------------------------------
         self._action_frame = ctk.CTkFrame(self, height=60, corner_radius=0)
@@ -246,6 +324,12 @@ class SettingsModal(ctk.CTkToplevel):
             command=self.destroy
         )
         self._cancel_btn.grid(row=0, column=1, padx=20, pady=15, sticky="ew")
+
+    def _on_slider_change(self, val: float) -> None:
+        minutes = int(val)
+        self._interval_label.configure(
+            text=i18n.t("ui.settings.alert_interval_label", minutes=minutes)
+        )
 
     def _toggle_gemini_key_visibility(self) -> None:
         self._gemini_key_visible = not self._gemini_key_visible
@@ -313,6 +397,23 @@ class SettingsModal(ctk.CTkToplevel):
 
         dual_path = db.get_setting("DUAL_INTERMEDIARY_PATH", "DualRecordings")
         self._dual_entry.insert(0, dual_path)
+
+        # 5. Alerts & Tray Config
+        tray_enabled = db.get_setting("TRAY_ENABLED", "False").lower() == "true"
+        self._tray_enabled_var.set(tray_enabled)
+
+        notifs_enabled = db.get_setting("PERSISTENT_NOTIFICATIONS_ENABLED", "True").lower() == "true"
+        self._notifs_enabled_var.set(notifs_enabled)
+
+        alert_interval = int(db.get_setting("ALERT_INTERVAL", "15"))
+        self._interval_slider.set(alert_interval)
+        self._interval_label.configure(
+            text=i18n.t("ui.settings.alert_interval_label", minutes=alert_interval)
+        )
+
+        alert_types = db.get_setting("ALERT_TRANSCRIPTION_TYPES", "realtime").split(",")
+        self._type_realtime_var.set("realtime" in alert_types)
+        self._type_file_var.set("file" in alert_types)
 
     def _async_fetch_models(self) -> None:
         """Call APIs asynchronously to fetch available models without blocking UI."""
@@ -407,6 +508,18 @@ class SettingsModal(ctk.CTkToplevel):
             db.set_setting("APP_LANGUAGE", self._lang_combo.get())
             db.set_setting("VAULT_PATH", self._vault_entry.get().strip() or "Vault")
             db.set_setting("DUAL_INTERMEDIARY_PATH", self._dual_entry.get().strip() or "DualRecordings")
+
+            # Save Tray and Alerts configs
+            db.set_setting("TRAY_ENABLED", str(self._tray_enabled_var.get()))
+            db.set_setting("PERSISTENT_NOTIFICATIONS_ENABLED", str(self._notifs_enabled_var.get()))
+            db.set_setting("ALERT_INTERVAL", str(int(self._interval_slider.get())))
+
+            active_types = []
+            if self._type_realtime_var.get():
+                active_types.append("realtime")
+            if self._type_file_var.get():
+                active_types.append("file")
+            db.set_setting("ALERT_TRANSCRIPTION_TYPES", ",".join(active_types))
 
             # 3. Reload config to apply settings in-memory immediately
             config.reload_config()

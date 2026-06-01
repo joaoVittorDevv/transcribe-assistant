@@ -214,3 +214,65 @@ def test_config_reload_and_propagation(temp_db):
         assert mock_module.NETWORK_PING_HOST == "4.4.4.4"
     finally:
         sys.modules.pop("app.mock_service", None)
+
+
+def test_new_alerts_config_migration(temp_db):
+    """Testa se as novas configurações de alertas e tray são migradas com valores padrão."""
+    import app.config as config
+    import app.database as db
+    
+    # Executa a carga/migração
+    config.load_all_settings()
+    
+    # Verifica se os novos valores foram gravados na tabela do banco
+    assert db.get_setting("TRAY_ENABLED") == "False"
+    assert db.get_setting("PERSISTENT_NOTIFICATIONS_ENABLED") == "True"
+    assert db.get_setting("ALERT_TRANSCRIPTION_TYPES") == "realtime"
+    assert db.get_setting("ALERT_INTERVAL") == "15"
+    
+    # Verifica se os valores foram expostos em memória nas variáveis globais
+    assert config.TRAY_ENABLED is False
+    assert config.PERSISTENT_NOTIFICATIONS_ENABLED is True
+    assert config.ALERT_TRANSCRIPTION_TYPES == "realtime"
+    assert config.ALERT_INTERVAL == 15
+
+
+def test_new_alerts_config_reload_and_propagation(temp_db):
+    """Testa se os novos valores de alertas e tray recarregam e se propagam via reload_config()."""
+    import app.config as config
+    import app.database as db
+    
+    # Setup inicial no banco temporário
+    db.set_setting("APP_LANGUAGE", "pt")
+    db.set_setting("TRAY_ENABLED", "True")
+    db.set_setting("PERSISTENT_NOTIFICATIONS_ENABLED", "False")
+    db.set_setting("ALERT_INTERVAL", "30")
+    db.set_setting("ALERT_TRANSCRIPTION_TYPES", "realtime,file")
+    
+    config.load_all_settings()
+    assert config.TRAY_ENABLED is True
+    assert config.PERSISTENT_NOTIFICATIONS_ENABLED is False
+    assert config.ALERT_INTERVAL == 30
+    assert config.ALERT_TRANSCRIPTION_TYPES == "realtime,file"
+    
+    # Atualiza valores no banco
+    db.set_setting("TRAY_ENABLED", "False")
+    db.set_setting("ALERT_INTERVAL", "45")
+    
+    # Cria módulo mock
+    import sys
+    from types import ModuleType
+    mock_module = ModuleType("app.mock_alert_service")
+    mock_module.TRAY_ENABLED = True
+    mock_module.ALERT_INTERVAL = 30
+    sys.modules["app.mock_alert_service"] = mock_module
+    
+    try:
+        config.reload_config()
+        assert config.TRAY_ENABLED is False
+        assert config.ALERT_INTERVAL == 45
+        assert mock_module.TRAY_ENABLED is False
+        assert mock_module.ALERT_INTERVAL == 45
+    finally:
+        sys.modules.pop("app.mock_alert_service", None)
+

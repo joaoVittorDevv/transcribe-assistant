@@ -30,7 +30,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue';
+import { ref, onMounted } from 'vue';
 import ProviderToggle from '../topbar/ProviderToggle.vue';
 import NetworkStatus from '../topbar/NetworkStatus.vue';
 import LanguageToggle from '../topbar/LanguageToggle.vue';
@@ -41,6 +41,26 @@ import BottomActionBar from '../bottom/BottomActionBar.vue';
 import SettingsModal from '../settings/SettingsModal.vue';
 
 const showSettings = ref(false);
+
+onMounted(async () => {
+  // Sync electron tray configurations at boot
+  try {
+    const res = await fetch('http://localhost:18763/settings');
+    if (res.ok) {
+      const data = await res.json();
+      if (window.electronAPI && window.electronAPI.updateSettingsTray) {
+        window.electronAPI.updateSettingsTray({
+          enabled: data.tray_enabled ?? false,
+          notificationsEnabled: data.persistent_notifications_enabled ?? true,
+          interval: data.alert_interval ?? 15,
+          types: data.alert_transcription_types || 'realtime'
+        });
+      }
+    }
+  } catch (err) {
+    console.warn('Failed to load settings at boot to sync tray:', err);
+  }
+});
 </script>
 
 <style scoped>

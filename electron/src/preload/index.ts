@@ -21,6 +21,9 @@ export interface ElectronAPI {
   onInsertText(callback: (payload: { text: string; tabId?: string }) => void): () => void;
   resetInsertionPoint(): void;
   onResetInsertionPoint(callback: () => void): () => void;
+  updateSettingsTray(settings: { enabled: boolean; notificationsEnabled: boolean; interval: number; types: string }): void;
+  updateAudioState(state: 'idle' | 'recording' | 'transcribing' | 'error'): void;
+  onStopRecordingFromTray(callback: () => void): () => void;
 }
 
 const electronAPI: ElectronAPI = {
@@ -81,6 +84,20 @@ const electronAPI: ElectronAPI = {
     const handler = () => callback();
     ipcRenderer.on('reset-insertion-point', handler);
     return () => ipcRenderer.removeListener('reset-insertion-point', handler);
+  },
+
+  updateSettingsTray(settings) {
+    ipcRenderer.send('update-settings-tray', settings);
+  },
+
+  updateAudioState(state) {
+    ipcRenderer.send('update-audio-state', state);
+  },
+
+  onStopRecordingFromTray(callback) {
+    const handler = () => callback();
+    ipcRenderer.on('stop-recording-from-tray', handler);
+    return () => ipcRenderer.removeListener('stop-recording-from-tray', handler);
   },
 };
 
