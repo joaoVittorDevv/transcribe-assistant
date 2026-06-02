@@ -26,7 +26,7 @@ run:
 # ==========================================
 install:
 	@echo "🤖 Compilando e empacotando o frontend Electron..."
-	cd electron && npm install && npm run package
+	cd electron && npm install --legacy-peer-deps && npm run package
 	
 	@echo "🤖 Verificando banco de dados existente para preservação..."
 	# Se existir um banco de dados, cria um backup em /tmp para evitar perda de dados e configurações do usuário
