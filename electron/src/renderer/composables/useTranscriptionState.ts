@@ -34,6 +34,7 @@ let wavCheckInterval: ReturnType<typeof setInterval> | null = null;
 
 // ---------------------------------------------------------------------------
 export function useTranscriptionState() {
+  const { resetInsertionPoint } = useEditor();
   const { activeTabId } = useTabs();
   const api = window.electronAPI as ElectronAPI;
   const { promptData } = useDefaultPrompt();
@@ -45,7 +46,7 @@ export function useTranscriptionState() {
   function initSocketListeners() {
     if (socketListenersInitialized) return;
     const { socket } = useSocket();
-    const { insertTextWithAck } = useEditor();
+    const { insertTextWithAck, resetInsertionPoint } = useEditor();
     const { setPhase, reset: resetProgress } = useTranscriptionProgress();
 
     if (!socket.value) return;
@@ -109,7 +110,7 @@ export function useTranscriptionState() {
     // Capture target tab so streaming goes to the correct tab even if user switches
     const targetTabId = activeTabId.value;
     // Reset editor's tracked insertion point so it re-captures cursor on first chunk
-    api.resetInsertionPoint();
+    resetInsertionPoint();
     // Create new AbortController for this transcription
     abortController = new AbortController();
     sessionId.value = null;
@@ -189,7 +190,7 @@ export function useTranscriptionState() {
     // Capture target tab so streaming goes to the correct tab even if user switches
     const targetTabId = activeTabId.value;
     // Reset editor's tracked insertion point so it re-captures cursor on first chunk
-    api.resetInsertionPoint();
+    resetInsertionPoint();
     // Create new AbortController for this transcription
     abortController = new AbortController();
     sessionId.value = null;
@@ -501,7 +502,7 @@ export function useTranscriptionState() {
     const targetTabId = activeTabId.value;
 
     state.value = 'TRANSCRIBING';
-    api.resetInsertionPoint();
+    resetInsertionPoint();
     abortController = new AbortController();
     sessionId.value = null;
     const { setPhase, reset: resetProgress } = useTranscriptionProgress();

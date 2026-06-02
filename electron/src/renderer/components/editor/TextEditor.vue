@@ -204,16 +204,20 @@ async function insertTextWithAck(text: string, tabId?: string): Promise<void> {
     transcriptionInsertIndex = maxPos;
   }
 
-  const tr = ed.state.tr;
-  const textNode = ed.schema.text(text);
-  tr.insert(transcriptionInsertIndex, textNode);
-  
-  // BUG FIX: Avança o índice rastreado pelo tamanho do texto inserido ANTES do dispatch.
-  // Isso garante que mesmo se algum listener de onUpdate lançar uma exceção,
-  // a posição da transcrição ainda estará correta para o próximo bloco.
-  transcriptionInsertIndex += text.length;
+  const oldSize = ed.state.doc.content.size;
 
-  ed.view.dispatch(tr);
+  // BUG FIX: Em vez de usar tr.insert e ed.schema.text (que remove quebras
+  // de linha e ignora formatação), usamos insertContentAt do TipTap. 
+  // Ele entende Markdown e HTML e insere blocos corretos (parágrafos/br).
+  ed.commands.insertContentAt(transcriptionInsertIndex, text);
+  
+  const newSize = ed.state.doc.content.size;
+
+  // Avança o índice exatamente pela quantidade de conteúdo gerado,
+  // garantindo precisão milimétrica mesmo se o Tiptap criou novos nós <p>.
+  transcriptionInsertIndex += (newSize - oldSize);
+
+  // Não precisamos chamar ed.view.dispatch() pois o ed.commands já o faz!
 
   ed.commands.setTextSelection(transcriptionInsertIndex);
   ed.commands.scrollIntoView();
