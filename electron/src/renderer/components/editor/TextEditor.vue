@@ -172,7 +172,7 @@ const editor = useEditor({
     }),
   ],
   onUpdate: ({ editor }) => {
-    const md = (editor.storage.markdown as any)?.getMarkdown?.() ?? editor.state.doc.textContent;
+    const md = (editor as any)?.getMarkdown?.() ?? (editor.storage.markdown as any)?.getMarkdown?.() ?? editor.state.doc.textContent;
     updateContent(activeTabId.value, md);
     updateSearchState();
   },
@@ -254,7 +254,7 @@ watch(
   (newMarkdown) => {
     const ed = editor.value;
     if (!ed) return;
-    const currentMarkdown = (ed.storage.markdown as any).getMarkdown();
+    const currentMarkdown = (ed as any)?.getMarkdown?.() ?? (ed.storage.markdown as any)?.getMarkdown?.() ?? ed.state.doc.textContent;
     if (newMarkdown !== undefined && currentMarkdown !== newMarkdown) {
       ed.commands.setContent(newMarkdown, { emitUpdate: false } as any);
     }
@@ -303,8 +303,8 @@ function undoEditor() {
 function getMarkdown() {
   if (!editor.value) return '';
   // Access Markdown extension API with safe fallback
-  const md = (editor.value.storage.markdown as any)?.getMarkdown?.();
-  return md ?? editor.value.state.doc.textContent;
+  const md = (editor.value as any)?.getMarkdown?.() ?? (editor.value.storage.markdown as any)?.getMarkdown?.() ?? editor.value.state.doc.textContent;
+  return md;
 }
 
 defineExpose({ clearEditor, getMarkdown, undo: undoEditor, insertTextWithAck, resetInsertionPoint });
