@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog, Tray, Menu, Notification, nativeImage } from 'electron';
+import { app, BrowserWindow, clipboard, ipcMain, dialog, Tray, Menu, Notification, nativeImage } from 'electron';
 import { spawn, type ChildProcess } from 'child_process';
 import path from 'path';
 import * as url from 'url';
@@ -19,7 +19,7 @@ function startServer(): void {
   server = spawn('uv', ['run', 'python', '-m', 'app.server'], {
     cwd: path.resolve(__dirname, '../../../..'),
     stdio: 'pipe',
-    detached: false,
+    detached: true,
   });
   server.stdout?.on('data', (data: Buffer) => process.stdout.write(`[sse-server] ${data}`));
   server.stderr?.on('data', (data: Buffer) => process.stderr.write(`[sse-server:err] ${data}`));
@@ -27,7 +27,18 @@ function startServer(): void {
 }
 
 function stopServer(): void {
-  if (server) { server.kill('SIGTERM'); server = null; }
+  if (server && server.pid) {
+    try {
+      if (process.platform === 'win32') {
+        spawn('taskkill', ['/pid', server.pid.toString(), '/f', '/t']);
+      } else {
+        process.kill(-server.pid, 'SIGTERM');
+      }
+    } catch (e) {
+      server.kill('SIGTERM');
+    }
+    server = null;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -340,6 +351,16 @@ function setupIpcHandlers(): void {
       return true;
     } catch (err) {
       console.error('[delete-file] error:', err);
+      return false;
+    }
+  });
+
+  ipcMain.handle('clipboard-write', (_event, text: string) => {
+    try {
+      clipboard.writeText(text);
+      return true;
+    } catch (err) {
+      console.error('[clipboard-write] error:', err);
       return false;
     }
   });

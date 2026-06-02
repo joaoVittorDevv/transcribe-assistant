@@ -12,7 +12,13 @@ VERSION := $(shell grep -m 1 'version =' pyproject.toml | cut -d '"' -f 2)
 # ==========================================
 
 # Iniciar o sistema Transcribe Assistant com interface Electron (Vue 3)
+# Garante a sincronização do ambiente virtual Python e dependências do Node.js
 run:
+	@echo "🤖 Sincronizando dependências do Python via uv..."
+	uv sync
+	@echo "🤖 Verificando e instalando dependências do Node.js..."
+	cd electron && npm install --legacy-peer-deps
+	@echo "🤖 Iniciando o Transcribe Assistant (Electron)..."
 	cd electron && npm run start
 
 # ==========================================

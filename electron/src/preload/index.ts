@@ -17,6 +17,7 @@ export interface ElectronAPI {
   openDirectoryPicker(): Promise<string | null>;
   readFile(path: string): Promise<ArrayBuffer | null>;
   deleteFile(path: string): Promise<boolean>;
+  writeClipboard(text: string): Promise<boolean>;
   insertTextAtCursor(text: string, tabId?: string): Promise<boolean>;
   onInsertText(callback: (payload: { text: string; tabId?: string }) => void): () => void;
   resetInsertionPoint(): void;
@@ -61,6 +62,10 @@ const electronAPI: ElectronAPI = {
 
   async deleteFile(filePath: string) {
     return ipcRenderer.invoke('delete-file', filePath);
+  },
+
+  async writeClipboard(text: string): Promise<boolean> {
+    return ipcRenderer.invoke('clipboard-write', text);
   },
 
   insertTextAtCursor(text: string, tabId?: string): Promise<boolean> {

@@ -40,9 +40,13 @@
     <div class="flex items-center gap-2">
       <button @click="handleCopy" class="glass-btn flex items-center gap-1.5 text-xs py-1.5 px-3">
         <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M15.666 3.888A2.25 2.25 0 0013.5 2.25h-3c-1.03 0-1.9.693-2.166 1.638m7.332 0c.055.194.084.4.084.612v0a.75.75 0 01-.75.75H9a.75.75 0 01-.75-.75v0c0-.212.03-.418.084-.612m7.332 0c.646.049 1.288.11 1.927.184 1.1.128 1.907 1.077 1.907 2.185V19.5a2.25 2.25 0 01-2.25 2.25H6.75A2.25 2.25 0 014.5 19.5V6.257c0-1.108.806-2.057 1.907-2.185a48.208 48.208 0 011.927-.184" />
+          <path v-if="copyFeedback === 'idle'" stroke-linecap="round" stroke-linejoin="round" d="M15.666 3.888A2.25 2.25 0 0013.5 2.25h-3c-1.03 0-1.9.693-2.166 1.638m7.332 0c.055.194.084.4.084.612v0a.75.75 0 01-.75.75H9a.75.75 0 01-.75-.75v0c0-.212.03-.418.084-.612m7.332 0c.646.049 1.288.11 1.927.184 1.1.128 1.907 1.077 1.907 2.185V19.5a2.25 2.25 0 01-2.25 2.25H6.75A2.25 2.25 0 014.5 19.5V6.257c0-1.108.806-2.057 1.907-2.185a48.208 48.208 0 011.927-.184" />
+          <path v-else-if="copyFeedback === 'success'" stroke-linecap="round" stroke-linejoin="round" d="M4.5 12.75l6 6 9-13.5" />
+          <path v-else stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
         </svg>
-        {{ t('buttons.copy') }}
+        <span v-if="copyFeedback === 'idle'">{{ t('buttons.copy') }}</span>
+        <span v-else-if="copyFeedback === 'success'" class="text-green-400">{{ t('toast.copied') }}</span>
+        <span v-else class="text-red-400">{{ t('toast.copy_error') }}</span>
       </button>
       <button @click="handleReset" class="glass-btn flex items-center gap-1.5 text-xs py-1.5 px-3">
         <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
@@ -65,21 +69,44 @@ import { useTabs } from '../../composables/useTabs';
 import { useEditor } from '../../composables/useEditor';
 import { useClipboard } from '../../composables/useClipboard';
 import { t } from '../../i18n';
+import type { ElectronAPI } from '../../types/global';
 
+const api = window.electronAPI as ElectronAPI;
 const { transcriptionState, elapsedSeconds, isShowingCancel, handleRecordClick, handleCancel, setMode } = useTranscriptionState();
-const { resetActiveTab } = useTabs();
+const { resetActiveTab, getActiveTab } = useTabs();
 const { clearEditor, getMarkdown, undo } = useEditor();
 const { copyToClipboard } = useClipboard();
 
 const showUndoToast = ref(false);
+const copyFeedback = ref<'idle' | 'success' | 'error'>('idle');
 let undoToastTimer: ReturnType<typeof setTimeout> | null = null;
+let copyFeedbackTimer: ReturnType<typeof setTimeout> | null = null;
 
-function handleCopy() {
-  const markdown = getMarkdown();
-  if (markdown) copyToClipboard(markdown);
+async function handleCopy() {
+  let markdown = getMarkdown();
+  if (!markdown) {
+    markdown = getActiveTab()?.content || '';
+  }
+  if (!markdown) return;
+
+  const ok = await copyToClipboard(markdown);
+  copyFeedback.value = ok ? 'success' : 'error';
+  if (copyFeedbackTimer) clearTimeout(copyFeedbackTimer);
+  copyFeedbackTimer = setTimeout(() => {
+    copyFeedback.value = 'idle';
+    copyFeedbackTimer = null;
+  }, 2000);
 }
 
 function handleReset() {
+  // If transcription is active, abort it first to prevent ghost text insertion
+  if (transcriptionState.value === 'TRANSCRIBING') {
+    handleCancel();
+  }
+
+  // Reset editor insertion tracking so stale index doesn't cause misplaced text
+  api.resetInsertionPoint();
+
   clearEditor();
   resetActiveTab();
 
@@ -107,6 +134,7 @@ function handleModeChange(mode: 'mic' | 'system' | 'dual') {
 
 onUnmounted(() => {
   if (undoToastTimer) clearTimeout(undoToastTimer);
+  if (copyFeedbackTimer) clearTimeout(copyFeedbackTimer);
 });
 </script>
 
@@ -168,4 +196,3 @@ onUnmounted(() => {
   margin-bottom: 0;
 }
 </style>
-

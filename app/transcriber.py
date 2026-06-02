@@ -427,9 +427,10 @@ class Transcriber:
             return final_text
 
         except Exception as exc:
-            from google.api_core.exceptions import DeadlineExceeded
-
-            if isinstance(exc, DeadlineExceeded) or "504" in str(exc):
+            # Check for deadline exceeded without importing google-api-core directly
+            # to prevent ModuleNotFoundError if the library is not installed
+            exc_name = type(exc).__name__
+            if exc_name == "DeadlineExceeded" or "504" in str(exc) or "DEADLINE_EXCEEDED" in str(exc):
                 raise TranscriptionError(
                     "A conexao expirou (504: DEADLINE_EXCEEDED)."
                 ) from exc

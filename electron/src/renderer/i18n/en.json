@@ -73,5 +73,7 @@
   "settings.alerts.types_realtime": "Real-time recordings",
   "settings.alerts.types_file": "File imports",
   "toast.content_cleared": "Tab content cleared.",
-  "toast.undo": "Undo"
+  "toast.undo": "Undo",
+  "toast.copied": "Copied!",
+  "toast.copy_error": "Error"
 }

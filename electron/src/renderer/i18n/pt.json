@@ -73,5 +73,7 @@
   "settings.alerts.types_realtime": "Gravações em tempo real",
   "settings.alerts.types_file": "Importações de arquivos",
   "toast.content_cleared": "Conteúdo da aba limpo.",
-  "toast.undo": "Desfazer"
+  "toast.undo": "Desfazer",
+  "toast.copied": "Copiado!",
+  "toast.copy_error": "Erro"
 }

@@ -30,6 +30,121 @@ let wavGenerationTimedOut = false;
 // Interval ID for WAV polling — cleared on cancel to prevent stale triggers
 let wavCheckInterval: ReturnType<typeof setInterval> | null = null;
 
+// ---------------------------------------------------------------------------
+// Shared SSE stream consumer
+// ---------------------------------------------------------------------------
+// Extracted from the triplicated parser logic in transcribeFile, transcribeDual,
+// and importAndTranscribe to ensure bug fixes apply consistently across all flows.
+
+interface SSEStreamOptions {
+  reader: ReadableStreamDefaultReader<Uint8Array>;
+  targetTabId: string;
+  setPhase: (phase: ProgressPhase, message?: string) => void;
+  resetProgress: () => void;
+  logPrefix: string;
+  onDone?: () => void;
+}
+
+async function consumeSSEStream(options: SSEStreamOptions): Promise<void> {
+  const { reader, targetTabId, setPhase, resetProgress, logPrefix, onDone } = options;
+  const api = window.electronAPI as ElectronAPI;
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let chunksReceived = 0;
+  let eventType = '';
+  const dataLines: string[] = [];
+
+  // Flush an accumulated SSE event.
+  // Returns 'return' if caller should exit.
+  const flushEvent = async (type: string, data: string): Promise<'continue' | 'return'> => {
+    if (type === 'status') {
+      try {
+        const statusPayload = JSON.parse(data);
+        const phase = statusPayload.phase as ProgressPhase;
+        const message = statusPayload.message as string | undefined;
+        // Handle error phase from server (not in PROGRESS_STEPS — it's a terminal state)
+        if (phase === 'error') {
+          setPhase('error', message || 'Erro na transcrição');
+          return 'continue';
+        }
+        // Only dispatch known phases to avoid progress glitches
+        const knownPhases = new Set(PROGRESS_STEPS.map((s) => s.id));
+        if (phase && knownPhases.has(phase)) {
+          setPhase(phase, message);
+          console.debug(`[Transcription] ${logPrefix} status:`, phase, message ?? '');
+        } else if (phase) {
+          console.debug(`[Transcription] ${logPrefix} ignoring unknown phase:`, phase);
+        }
+      } catch (e) {
+        console.warn(`[Transcription] ${logPrefix} failed to parse status event:`, data);
+      }
+      return 'continue';
+    }
+    // 'chunk' event (or default) — handle [DONE], [ERROR], or text
+    if (data === '[DONE]') {
+      console.log(`[Transcription] ${logPrefix} completed —`, chunksReceived, 'chunks received');
+      setPhase('done');
+      // Brief delay to show done state before resetting
+      setTimeout(() => {
+        resetProgress();
+        state.value = 'IDLE';
+        elapsedSeconds.value = 0;
+        sessionId.value = null;
+      }, 2000);
+      onDone?.();
+      return 'return';
+    }
+    if (data.startsWith('[ERROR]')) {
+      console.error(`[transcription] ${logPrefix} error:`, data);
+      const errorMsg = data.slice(7).trim() || 'Erro desconhecido na transcrição';
+      setPhase('error' as ProgressPhase, errorMsg);
+      api.updateAudioState('error');
+      return 'return';
+    }
+    // Server sends raw text chunks (not JSON) — insert directly
+    chunksReceived++;
+    console.debug(`[Transcription] ${logPrefix} chunk #${chunksReceived}:`, data.length, 'chars');
+    await api.insertTextAtCursor(data, targetTabId);
+    return 'continue';
+  };
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() ?? '';
+    for (const line of lines) {
+      // Empty line = SSE event boundary → flush accumulated event
+      if (line === '' || line === '\r') {
+        if (dataLines.length > 0) {
+          const dataStr = dataLines.join('\n');
+          const result = await flushEvent(eventType, dataStr);
+          eventType = '';
+          dataLines.length = 0;
+          if (result === 'return') return;
+        }
+        continue;
+      }
+      // Accumulate SSE fields
+      if (line.startsWith('event:')) {
+        eventType = line.slice(6).trim();
+      } else if (line.startsWith('data:')) {
+        let dataContent = line.slice(5);
+        if (dataContent.startsWith(' ')) dataContent = dataContent.slice(1);
+        dataLines.push(dataContent);
+      }
+      // Lines not starting with event: or data: are SSE comments — ignored
+    }
+  }
+  // Flush last event if stream ended without trailing empty line
+  if (dataLines.length > 0) {
+    const dataStr = dataLines.join('\n');
+    const result = await flushEvent(eventType, dataStr);
+    if (result === 'return') return;
+  }
+}
+
 export function useTranscriptionState() {
   const { activeTabId } = useTabs();
   const api = window.electronAPI as ElectronAPI;
@@ -90,94 +205,18 @@ export function useTranscriptionState() {
       const reader = response.body?.getReader();
       if (!reader) throw new Error('No response body');
 
-      const decoder = new TextDecoder();
-      let buffer = '';
-      let chunksReceived = 0;
-      let eventType = '';
-      const dataLines: string[] = [];
-
-      const flushEvent = async (type: string, data: string): Promise<'continue' | 'return'> => {
-        if (type === 'status') {
-          try {
-            const statusPayload = JSON.parse(data);
-            const phase = statusPayload.phase as ProgressPhase;
-            const message = statusPayload.message as string | undefined;
-            if (phase === 'error') {
-              setPhase('error', message || 'Erro na transcrição');
-              return 'continue';
-            }
-            const knownPhases = new Set(PROGRESS_STEPS.map((s) => s.id));
-            if (phase && knownPhases.has(phase)) {
-              setPhase(phase, message);
-              console.debug('[Transcription] dual status:', phase, message ?? '');
-            } else if (phase) {
-              console.debug('[Transcription] dual ignoring unknown phase:', phase);
-            }
-          } catch (e) {
-            console.warn('[Transcription] dual failed to parse status event:', data);
-          }
-          return 'continue';
-        }
-        if (data === '[DONE]') {
-          console.log('[Transcription] dual completed —', chunksReceived, 'chunks received');
-          setPhase('done');
-          api.resetInsertionPoint();
-          setTimeout(() => {
-            resetProgress();
-            state.value = 'IDLE';
-            elapsedSeconds.value = 0;
-            sessionId.value = null;
-          }, 2000);
+      await consumeSSEStream({
+        reader,
+        targetTabId,
+        setPhase,
+        resetProgress,
+        logPrefix: 'dual',
+        onDone: () => {
           // Clean up dual audio files on success
           if (micPath) api.deleteFile(micPath).catch(() => {});
           if (sysPath) api.deleteFile(sysPath).catch(() => {});
-          return 'return';
-        }
-        if (data.startsWith('[ERROR]')) {
-          console.error('[transcription] dual error:', data);
-          const errorMsg = data.slice(7).trim() || 'Erro desconhecido na transcrição';
-          setPhase('error' as ProgressPhase, errorMsg);
-          api.updateAudioState('error');
-          api.resetInsertionPoint();
-          return 'return';
-        }
-        chunksReceived++;
-        console.debug('[Transcription] dual chunk #' + chunksReceived + ':', data.length, 'chars');
-        await api.insertTextAtCursor(data, targetTabId);
-        return 'continue';
-      };
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() ?? '';
-        for (const line of lines) {
-          if (line === '' || line === '\r') {
-            if (dataLines.length > 0) {
-              const dataStr = dataLines.join('\n');
-              const result = await flushEvent(eventType, dataStr);
-              eventType = '';
-              dataLines.length = 0;
-              if (result === 'return') return;
-            }
-            continue;
-          }
-          if (line.startsWith('event:')) {
-            eventType = line.slice(6).trim();
-          } else if (line.startsWith('data:')) {
-            let dataContent = line.slice(5);
-            if (dataContent.startsWith(' ')) dataContent = dataContent.slice(1);
-            dataLines.push(dataContent);
-          }
-        }
-      }
-      if (dataLines.length > 0) {
-        const dataStr = dataLines.join('\n');
-        const result = await flushEvent(eventType, dataStr);
-        if (result === 'return') return;
-      }
+        },
+      });
 
       if (!response.ok) {
         console.error('[transcription] dual HTTP error:', response.status, response.statusText);
@@ -202,7 +241,7 @@ export function useTranscriptionState() {
   async function transcribeFile(wavPath: string) {
     // Capture target tab so streaming goes to the correct tab even if user switches
     const targetTabId = activeTabId.value;
-    // Reset editor’s tracked insertion point so it re-captures cursor on first chunk
+    // Reset editor's tracked insertion point so it re-captures cursor on first chunk
     api.resetInsertionPoint();
     // Create new AbortController for this transcription
     abortController = new AbortController();
@@ -261,109 +300,19 @@ export function useTranscriptionState() {
       const reader = response.body?.getReader();
       if (!reader) throw new Error('No response body');
 
-      const decoder = new TextDecoder();
-      let buffer = '';
-      let chunksReceived = 0;
-      let eventType = '';
-      const dataLines: string[] = [];
-
-      // Flush an accumulated SSE event.
-      // Returns 'return' if caller should exit transcribeFile.
-      const flushEvent = async (type: string, data: string): Promise<'continue' | 'return'> => {
-        if (type === 'status') {
-          try {
-            const statusPayload = JSON.parse(data);
-            const phase = statusPayload.phase as ProgressPhase;
-            const message = statusPayload.message as string | undefined;
-            // Handle error phase from server (not in PROGRESS_STEPS — it's a terminal state)
-            if (phase === 'error') {
-              setPhase('error', message || 'Erro na transcrição');
-              return 'continue';
-            }
-            // Only dispatch known phases to avoid progress glitches
-            const knownPhases = new Set(PROGRESS_STEPS.map((s) => s.id));
-            if (phase && knownPhases.has(phase)) {
-              setPhase(phase, message);
-              console.debug('[Transcription] status:', phase, message ?? '');
-            } else if (phase) {
-              console.debug('[Transcription] ignoring unknown phase:', phase);
-            }
-          } catch (e) {
-            console.warn('[Transcription] failed to parse status event:', data);
-          }
-          return 'continue';
-        }
-        // 'chunk' event (or default) — handle [DONE], [ERROR], or text
-        if (data === '[DONE]') {
-          console.log('[Transcription] completed —', chunksReceived, 'chunks received');
-          setPhase('done');
-          // Reset editor insertion tracking so next transcription re-captures cursor
-          api.resetInsertionPoint();
-          // Brief delay to show done state before resetting
-          setTimeout(() => {
-            resetProgress();
-            state.value = 'IDLE';
-            elapsedSeconds.value = 0;
-            sessionId.value = null;
-          }, 2000);
+      await consumeSSEStream({
+        reader,
+        targetTabId,
+        setPhase,
+        resetProgress,
+        logPrefix: 'single',
+        onDone: () => {
           // Clean up Vault file on successful transcription
           if (wavPath) {
             api.deleteFile(wavPath).catch(() => {});
           }
-          return 'return';
-        }
-        if (data.startsWith('[ERROR]')) {
-          console.error('[transcription]', data);
-          const errorMsg = data.slice(7).trim() || 'Erro desconhecido na transcrição';
-          setPhase('error' as ProgressPhase, errorMsg);
-          api.updateAudioState('error');
-          // Reset editor insertion tracking so next transcription re-captures cursor
-          api.resetInsertionPoint();
-          // Keep bar visible — user must dismiss manually
-          return 'return';
-        }
-        // Server sends raw text chunks (not JSON) — insert directly
-        chunksReceived++;
-        console.debug('[Transcription] chunk #' + chunksReceived + ':', data.length, 'chars');
-        await api.insertTextAtCursor(data, targetTabId);
-        return 'continue';
-      }
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() ?? '';
-        for (const line of lines) {
-          // Empty line = SSE event boundary → flush accumulated event
-          if (line === '' || line === '\r') {
-            if (dataLines.length > 0) {
-              const dataStr = dataLines.join('\n');
-              const result = await flushEvent(eventType, dataStr);
-              eventType = '';
-              dataLines.length = 0;
-              if (result === 'return') return;
-            }
-            continue;
-          }
-          // Accumulate SSE fields
-          if (line.startsWith('event:')) {
-            eventType = line.slice(6).trim();
-          } else if (line.startsWith('data:')) {
-            let dataContent = line.slice(5);
-            if (dataContent.startsWith(' ')) dataContent = dataContent.slice(1);
-            dataLines.push(dataContent);
-          }
-          // Lines not starting with event: or data: are SSE comments — ignored
-        }
-      }
-      // Flush last event if stream ended without trailing empty line
-      if (dataLines.length > 0) {
-        const dataStr = dataLines.join('\n');
-        const result = await flushEvent(eventType, dataStr);
-        if (result === 'return') return;
-      }
+        },
+      });
 
       if (!response.ok) {
         console.error('[transcription] HTTP error:', response.status, response.statusText);
@@ -642,87 +591,13 @@ export function useTranscriptionState() {
       const reader = response.body?.getReader();
       if (!reader) throw new Error('No response body');
 
-      const decoder = new TextDecoder();
-      let buffer = '';
-      let chunksReceived = 0;
-      let eventType = '';
-      const dataLines: string[] = [];
-
-      const flushEvent = async (type: string, data: string): Promise<'continue' | 'return'> => {
-        if (type === 'status') {
-          try {
-            const statusPayload = JSON.parse(data);
-            const phase = statusPayload.phase as ProgressPhase;
-            const message = statusPayload.message as string | undefined;
-            if (phase === 'error') {
-              setPhase('error', message || 'Erro na transcrição');
-              return 'continue';
-            }
-            const knownPhases = new Set(PROGRESS_STEPS.map((s) => s.id));
-            if (phase && knownPhases.has(phase)) {
-              setPhase(phase, message);
-            }
-          } catch (e) {
-            console.warn('[Transcription] import: failed to parse status event:', data);
-          }
-          return 'continue';
-        }
-        if (data === '[DONE]') {
-          console.log('[Transcription] import completed —', chunksReceived, 'chunks received');
-          setPhase('done');
-          api.resetInsertionPoint();
-          setTimeout(() => {
-            resetProgress();
-            state.value = 'IDLE';
-            elapsedSeconds.value = 0;
-            sessionId.value = null;
-          }, 2000);
-          return 'return';
-        }
-        if (data.startsWith('[ERROR]')) {
-          console.error('[transcription] import error:', data);
-          const errorMsg = data.slice(7).trim() || 'Erro desconhecido na transcrição';
-          setPhase('error' as ProgressPhase, errorMsg);
-          api.updateAudioState('error');
-          api.resetInsertionPoint();
-          return 'return';
-        }
-        chunksReceived++;
-        await api.insertTextAtCursor(data, targetTabId);
-        return 'continue';
-      };
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() ?? '';
-        for (const line of lines) {
-          if (line === '' || line === '\r') {
-            if (dataLines.length > 0) {
-              const dataStr = dataLines.join('\n');
-              const result = await flushEvent(eventType, dataStr);
-              eventType = '';
-              dataLines.length = 0;
-              if (result === 'return') return;
-            }
-            continue;
-          }
-          if (line.startsWith('event:')) {
-            eventType = line.slice(6).trim();
-          } else if (line.startsWith('data:')) {
-            let dataContent = line.slice(5);
-            if (dataContent.startsWith(' ')) dataContent = dataContent.slice(1);
-            dataLines.push(dataContent);
-          }
-        }
-      }
-      if (dataLines.length > 0) {
-        const dataStr = dataLines.join('\n');
-        const result = await flushEvent(eventType, dataStr);
-        if (result === 'return') return;
-      }
+      await consumeSSEStream({
+        reader,
+        targetTabId,
+        setPhase,
+        resetProgress,
+        logPrefix: 'import',
+      });
 
       if (!response.ok) {
         setPhase('error', `Erro HTTP ${response.status}: ${response.statusText}`);
