@@ -4,6 +4,8 @@ import { useDefaultPrompt } from './useDefaultPrompt';
 import { useProvider } from './useProvider';
 import { useTranscriptionProgress, PROGRESS_STEPS, type ProgressPhase } from './useTranscriptionProgress';
 import type { ElectronAPI } from '../types/global';
+import { useSocket } from './useSocket';
+import { useEditor } from './useEditor';
 
 export type TranscriptionState = 'IDLE' | 'RECORDING' | 'TRANSCRIBING';
 
@@ -31,125 +33,74 @@ let wavGenerationTimedOut = false;
 let wavCheckInterval: ReturnType<typeof setInterval> | null = null;
 
 // ---------------------------------------------------------------------------
-// Shared SSE stream consumer
-// ---------------------------------------------------------------------------
-// Extracted from the triplicated parser logic in transcribeFile, transcribeDual,
-// and importAndTranscribe to ensure bug fixes apply consistently across all flows.
-
-interface SSEStreamOptions {
-  reader: ReadableStreamDefaultReader<Uint8Array>;
-  targetTabId: string;
-  setPhase: (phase: ProgressPhase, message?: string) => void;
-  resetProgress: () => void;
-  logPrefix: string;
-  onDone?: () => void;
-}
-
-async function consumeSSEStream(options: SSEStreamOptions): Promise<void> {
-  const { reader, targetTabId, setPhase, resetProgress, logPrefix, onDone } = options;
+export function useTranscriptionState() {
+  const { activeTabId } = useTabs();
   const api = window.electronAPI as ElectronAPI;
-  const decoder = new TextDecoder();
-  let buffer = '';
-  let chunksReceived = 0;
-  let eventType = '';
-  const dataLines: string[] = [];
+  const { promptData } = useDefaultPrompt();
+  const { selectedProvider } = useProvider();
 
-  // Flush an accumulated SSE event.
-  // Returns 'return' if caller should exit.
-  const flushEvent = async (type: string, data: string): Promise<'continue' | 'return'> => {
-    if (type === 'status') {
-      try {
-        const statusPayload = JSON.parse(data);
-        const phase = statusPayload.phase as ProgressPhase;
-        const message = statusPayload.message as string | undefined;
-        // Handle error phase from server (not in PROGRESS_STEPS — it's a terminal state)
-        if (phase === 'error') {
-          setPhase('error', message || 'Erro na transcrição');
-          return 'continue';
-        }
-        // Only dispatch known phases to avoid progress glitches
-        const knownPhases = new Set(PROGRESS_STEPS.map((s) => s.id));
-        if (phase && knownPhases.has(phase)) {
-          setPhase(phase, message);
-          console.debug(`[Transcription] ${logPrefix} status:`, phase, message ?? '');
-        } else if (phase) {
-          console.debug(`[Transcription] ${logPrefix} ignoring unknown phase:`, phase);
-        }
-      } catch (e) {
-        console.warn(`[Transcription] ${logPrefix} failed to parse status event:`, data);
+  // Socket.IO event listeners setup (run once)
+  let socketListenersInitialized = false;
+
+  function initSocketListeners() {
+    if (socketListenersInitialized) return;
+    const { socket } = useSocket();
+    const { insertTextWithAck } = useEditor();
+    const { setPhase, reset: resetProgress } = useTranscriptionProgress();
+
+    if (!socket.value) return;
+
+    socket.value.on('transcription:chunk', async (payload, callback) => {
+      if (payload.sessionId !== sessionId.value) {
+        callback({ status: 'ignored' });
+        return;
       }
-      return 'continue';
-    }
-    // 'chunk' event (or default) — handle [DONE], [ERROR], or text
-    if (data === '[DONE]') {
-      console.log(`[Transcription] ${logPrefix} completed —`, chunksReceived, 'chunks received');
+      try {
+        const { activeTabId } = useTabs();
+        await insertTextWithAck(payload.text, activeTabId.value);
+        callback({ status: 'ok' });
+      } catch (e) {
+        console.error('[Socket.IO] Error inserting text:', e);
+        // Do not ack or maybe ack with error to trigger retry? We'll ack to keep it flowing.
+        callback({ status: 'error' });
+      }
+    });
+
+    socket.value.on('transcription:status', (payload) => {
+      if (payload.sessionId !== sessionId.value) return;
+      const phase = payload.phase as ProgressPhase;
+      const message = payload.message;
+      if (phase === 'error') {
+        setPhase('error', message || 'Erro na transcrição');
+      } else {
+        const knownPhases = new Set(PROGRESS_STEPS.map((s) => s.id));
+        if (knownPhases.has(phase)) {
+          setPhase(phase, message);
+        } else if ((phase as string) === 'cancelled') {
+           // handled in handleCancel
+        }
+      }
+    });
+
+    socket.value.on('transcription:error', (payload) => {
+      if (payload.sessionId !== sessionId.value) return;
+      setPhase('error', payload.message || 'Erro desconhecido');
+      api.updateAudioState('error');
+    });
+
+    socket.value.on('transcription:done', (payload) => {
+      if (payload.sessionId !== sessionId.value) return;
       setPhase('done');
-      // Brief delay to show done state before resetting
       setTimeout(() => {
         resetProgress();
         state.value = 'IDLE';
         elapsedSeconds.value = 0;
         sessionId.value = null;
       }, 2000);
-      onDone?.();
-      return 'return';
-    }
-    if (data.startsWith('[ERROR]')) {
-      console.error(`[transcription] ${logPrefix} error:`, data);
-      const errorMsg = data.slice(7).trim() || 'Erro desconhecido na transcrição';
-      setPhase('error' as ProgressPhase, errorMsg);
-      api.updateAudioState('error');
-      return 'return';
-    }
-    // Server sends raw text chunks (not JSON) — insert directly
-    chunksReceived++;
-    console.debug(`[Transcription] ${logPrefix} chunk #${chunksReceived}:`, data.length, 'chars');
-    await api.insertTextAtCursor(data, targetTabId);
-    return 'continue';
-  };
+    });
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split('\n');
-    buffer = lines.pop() ?? '';
-    for (const line of lines) {
-      // Empty line = SSE event boundary → flush accumulated event
-      if (line === '' || line === '\r') {
-        if (dataLines.length > 0) {
-          const dataStr = dataLines.join('\n');
-          const result = await flushEvent(eventType, dataStr);
-          eventType = '';
-          dataLines.length = 0;
-          if (result === 'return') return;
-        }
-        continue;
-      }
-      // Accumulate SSE fields
-      if (line.startsWith('event:')) {
-        eventType = line.slice(6).trim();
-      } else if (line.startsWith('data:')) {
-        let dataContent = line.slice(5);
-        if (dataContent.startsWith(' ')) dataContent = dataContent.slice(1);
-        dataLines.push(dataContent);
-      }
-      // Lines not starting with event: or data: are SSE comments — ignored
-    }
+    socketListenersInitialized = true;
   }
-  // Flush last event if stream ended without trailing empty line
-  if (dataLines.length > 0) {
-    const dataStr = dataLines.join('\n');
-    const result = await flushEvent(eventType, dataStr);
-    if (result === 'return') return;
-  }
-}
-
-export function useTranscriptionState() {
-  const { activeTabId } = useTabs();
-  const api = window.electronAPI as ElectronAPI;
-  const { promptData } = useDefaultPrompt();
-  const { selectedProvider } = useProvider();
 
   // NOVO: Transcrição dual — envia dois arquivos separadamente
   async function transcribeDual(paths: { mic: string | null; sys: string | null }) {
@@ -192,30 +143,18 @@ export function useTranscriptionState() {
 
       console.log('[Transcription] dual mode: sending mic.wav + sys.wav to /transcribe/dual');
 
+      const { socket } = useSocket();
+      initSocketListeners();
+      
+      if (socket.value) {
+        formData.append('X-Socket-ID', socket.value.id || '');
+      }
+
       const response = await fetch(`http://localhost:18763/transcribe/dual`, {
         method: 'POST',
         body: formData,
         signal: abortController.signal,
-      });
-
-      // Capture session ID from response headers
-      const sid = response.headers.get('X-Session-ID');
-      if (sid) sessionId.value = sid;
-
-      const reader = response.body?.getReader();
-      if (!reader) throw new Error('No response body');
-
-      await consumeSSEStream({
-        reader,
-        targetTabId,
-        setPhase,
-        resetProgress,
-        logPrefix: 'dual',
-        onDone: () => {
-          // Clean up dual audio files on success
-          if (micPath) api.deleteFile(micPath).catch(() => {});
-          if (sysPath) api.deleteFile(sysPath).catch(() => {});
-        },
+        headers: socket.value?.id ? { 'X-Socket-ID': socket.value.id } : {}
       });
 
       if (!response.ok) {
@@ -223,6 +162,14 @@ export function useTranscriptionState() {
         setPhase('error', `Erro HTTP ${response.status}: ${response.statusText}`);
         return;
       }
+
+      const resData = await response.json();
+      sessionId.value = resData.sessionId;
+
+      // Clean up files locally (server makes a copy)
+      if (micPath) api.deleteFile(micPath).catch(() => {});
+      if (sysPath) api.deleteFile(sysPath).catch(() => {});
+
     } catch (err: any) {
       if (err?.name === 'AbortError') {
         console.log('[transcription] dual fetch aborted by user');
@@ -287,31 +234,14 @@ export function useTranscriptionState() {
         console.log('[Transcription] dual mode: forcing Gemini for speaker diarization');
       }
 
+      const { socket } = useSocket();
+      initSocketListeners();
+
       const response = await fetch(`http://localhost:18763/transcribe`, {
         method: 'POST',
         body: formData,
         signal: abortController.signal,
-      });
-
-      // Capture session ID from response headers for server-side cancel
-      const sid = response.headers.get('X-Session-ID');
-      if (sid) sessionId.value = sid;
-
-      const reader = response.body?.getReader();
-      if (!reader) throw new Error('No response body');
-
-      await consumeSSEStream({
-        reader,
-        targetTabId,
-        setPhase,
-        resetProgress,
-        logPrefix: 'single',
-        onDone: () => {
-          // Clean up Vault file on successful transcription
-          if (wavPath) {
-            api.deleteFile(wavPath).catch(() => {});
-          }
-        },
+        headers: socket.value?.id ? { 'X-Socket-ID': socket.value.id } : {}
       });
 
       if (!response.ok) {
@@ -319,6 +249,14 @@ export function useTranscriptionState() {
         setPhase('error', `Erro HTTP ${response.status}: ${response.statusText}`);
         return;
       }
+
+      const resData = await response.json();
+      sessionId.value = resData.sessionId;
+
+      if (wavPath) {
+        api.deleteFile(wavPath).catch(() => {});
+      }
+
     } catch (err: any) {
       // AbortError is expected when user cancels — not an error
       if (err?.name === 'AbortError') {
@@ -448,9 +386,11 @@ export function useTranscriptionState() {
       pendingWavPaths = null;
       resetProgress();
     } else if (state.value === 'TRANSCRIBING') {
-      // Cancel transcription: abort in-flight fetch + notify server
       abortController?.abort();
-      if (sessionId.value) {
+      const { socket } = useSocket();
+      if (sessionId.value && socket.value) {
+        socket.value.emit('transcription:cancel', { sessionId: sessionId.value });
+        // Also fire the HTTP DELETE just in case as fallback (idempotent)
         fetch(`http://localhost:18763/transcribe/${sessionId.value}`, {
           method: 'DELETE',
         }).catch(() => {});
@@ -578,31 +518,24 @@ export function useTranscriptionState() {
       formData.append('mode', 'gemini');
       formData.append('source', 'import');
 
+      const { socket } = useSocket();
+      initSocketListeners();
+
       const response = await fetch('http://localhost:18763/transcribe', {
         method: 'POST',
         body: formData,
         signal: abortController.signal,
-      });
-
-      // Capture session ID from response headers
-      const sid = response.headers.get('X-Session-ID');
-      if (sid) sessionId.value = sid;
-
-      const reader = response.body?.getReader();
-      if (!reader) throw new Error('No response body');
-
-      await consumeSSEStream({
-        reader,
-        targetTabId,
-        setPhase,
-        resetProgress,
-        logPrefix: 'import',
+        headers: socket.value?.id ? { 'X-Socket-ID': socket.value.id } : {}
       });
 
       if (!response.ok) {
         setPhase('error', `Erro HTTP ${response.status}: ${response.statusText}`);
         return;
       }
+
+      const resData = await response.json();
+      sessionId.value = resData.sessionId;
+
     } catch (err: any) {
       if (err?.name === 'AbortError') {
         console.log('[transcription] import fetch aborted by user');

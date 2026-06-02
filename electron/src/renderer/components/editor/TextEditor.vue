@@ -22,7 +22,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted, onUnmounted, watch } from 'vue';
+import { ref, reactive, onMounted, onUnmounted, watch, nextTick } from 'vue';
 import { useEditor, EditorContent } from '@tiptap/vue-3';
 import StarterKit from '@tiptap/starter-kit';
 import { Markdown } from '@tiptap/markdown';
@@ -41,11 +41,9 @@ const api = window.electronAPI as ElectronAPI;
 
 const activeFormats = reactive<Set<string>>(new Set());
 
-let cleanupInsertText: (() => void) | null = null;
-let cleanupResetInsertion: (() => void) | null = null;
+let transcriptionInsertIndex: number | null = null;
 // Tracks insertion point during transcription streaming.
 // Captured as a ProseMirror position index.
-let transcriptionInsertIndex: number | null = null;
 
 // ------------------------------------------------------------------
 // Find & Replace state
@@ -174,7 +172,7 @@ const editor = useEditor({
     }),
   ],
   onUpdate: ({ editor }) => {
-    const md = (editor.storage.markdown as any).getMarkdown();
+    const md = (editor.storage.markdown as any)?.getMarkdown?.() ?? editor.state.doc.textContent;
     updateContent(activeTabId.value, md);
     updateSearchState();
   },
@@ -183,65 +181,54 @@ const editor = useEditor({
   },
 });
 
+async function insertTextWithAck(text: string, tabId?: string): Promise<void> {
+  const ed = editor.value;
+  if (!ed) return;
+
+  if (tabId && tabId !== activeTabId.value) {
+    const { tabs } = useTabs();
+    const targetTab = tabs.find(t => t.id === tabId);
+    if (targetTab) {
+      updateContent(tabId, targetTab.content + text);
+    }
+    return;
+  }
+
+  if (transcriptionInsertIndex === null) {
+    const { selection } = ed.state;
+    transcriptionInsertIndex = selection ? selection.anchor : ed.state.doc.content.size;
+  }
+
+  const maxPos = ed.state.doc.content.size;
+  if (transcriptionInsertIndex > maxPos) {
+    transcriptionInsertIndex = maxPos;
+  }
+
+  const tr = ed.state.tr;
+  const textNode = ed.schema.text(text);
+  tr.insert(transcriptionInsertIndex, textNode);
+  
+  // BUG FIX: Avança o índice rastreado pelo tamanho do texto inserido ANTES do dispatch.
+  // Isso garante que mesmo se algum listener de onUpdate lançar uma exceção,
+  // a posição da transcrição ainda estará correta para o próximo bloco.
+  transcriptionInsertIndex += text.length;
+
+  ed.view.dispatch(tr);
+
+  ed.commands.setTextSelection(transcriptionInsertIndex);
+  ed.commands.scrollIntoView();
+
+  // Wait for DOM update
+  await nextTick();
+}
+
+function resetInsertionPoint() {
+  transcriptionInsertIndex = null;
+}
+
 onMounted(() => {
-  // Listen for transcription text insertions at cursor.
-  cleanupInsertText = api.onInsertText((payload: { text: string; tabId?: string }) => {
-    const ed = editor.value;
-    if (!ed) return;
-
-    const { text, tabId } = payload;
-
-    // If tabId is specified and doesn't match active tab, buffer into tab store
-    if (tabId && tabId !== activeTabId.value) {
-      const { tabs } = useTabs();
-      const targetTab = tabs.find(t => t.id === tabId);
-      if (targetTab) {
-        // Content stores Markdown directly
-        updateContent(tabId, targetTab.content + text);
-      }
-      return;
-    }
-
-    // Initialize insertion point from current cursor on first chunk
-    if (transcriptionInsertIndex === null) {
-      const { selection } = ed.state;
-      // selection.anchor represents absolute ProseMirror offset
-      transcriptionInsertIndex = selection ? selection.anchor : ed.state.doc.content.size;
-    }
-
-    // Safety clamp: if user deleted text during transcription, don't overflow
-    const maxPos = ed.state.doc.content.size;
-    if (transcriptionInsertIndex > maxPos) {
-      transcriptionInsertIndex = maxPos;
-    }
-
-    // Insert raw text at the tracked position using ProseMirror transaction.
-    // Using tr.insert() with schema.text() ensures the content is treated as
-    // plain text — no Markdown parsing, no node interpretation.
-    const tr = ed.state.tr;
-    const textNode = ed.schema.text(text);
-    tr.insert(transcriptionInsertIndex, textNode);
-    ed.view.dispatch(tr);
-
-    // Read the actual cursor position from ProseMirror state after insertion.
-    // ProseMirror positions include structural offsets (paragraph tags, etc),
-    // so we cannot simply add text.length — we must read the state.
-    transcriptionInsertIndex = ed.state.selection.anchor;
-
-    // Move the visual selection (cursor) to the end of the newly inserted text
-    ed.commands.setTextSelection(transcriptionInsertIndex);
-
-    // Scroll to keep inserted text visible during streaming
-    ed.commands.scrollIntoView();
-  });
-
-  // Reset insertion tracking when new transcription starts
-  cleanupResetInsertion = api.onResetInsertionPoint(() => {
-    transcriptionInsertIndex = null;
-  });
-
-  // Register editor API (clear + markdown export + undo)
-  registerEditor({ clearEditor, getMarkdown, undo: undoEditor });
+  // Register editor API (clear + markdown export + undo + ack-based insert)
+  registerEditor({ clearEditor, getMarkdown, undo: undoEditor, insertTextWithAck, resetInsertionPoint });
 
   // Keyboard shortcut listener
   document.addEventListener('keydown', onEditorKeydown);
@@ -249,8 +236,6 @@ onMounted(() => {
 
 onUnmounted(() => {
   document.removeEventListener('keydown', onEditorKeydown);
-  cleanupInsertText?.();
-  cleanupResetInsertion?.();
 });
 
 // Reset insertion tracking on tab switch
@@ -314,11 +299,11 @@ function undoEditor() {
 function getMarkdown() {
   if (!editor.value) return '';
   // Access Markdown extension API with safe fallback
-  const md = editor.value.storage.markdown?.getMarkdown?.();
+  const md = (editor.value.storage.markdown as any)?.getMarkdown?.();
   return md ?? editor.value.state.doc.textContent;
 }
 
-defineExpose({ clearEditor, getMarkdown, undo: undoEditor });
+defineExpose({ clearEditor, getMarkdown, undo: undoEditor, insertTextWithAck, resetInsertionPoint });
 </script>
 
 <style>

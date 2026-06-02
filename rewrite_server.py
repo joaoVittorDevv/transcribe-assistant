@@ -1,17 +1,10 @@
-"""app/server.py — FastAPI SSE wrapper for the transcription engine.
-
-POST /transcribe        — Accepts audio file upload, streams transcription chunks via SSE.
-GET  /transcribe/status/{session_id} — Returns accumulated text + status for a session.
-DELETE /transcribe/{session_id}      — Cancels a session (idempotent).
-"""
-
-import asyncio
-import logging
-import os
-import tempfile
-import threading
-import uuid
+import re
 from pathlib import Path
+
+content = Path("app/server.py").read_text()
+
+# 1. Imports and Socket.IO initialization
+new_imports = """from pathlib import Path
 from typing import Annotated
 
 from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
@@ -53,28 +46,22 @@ async def on_cancel(sid, data):
                 _active_sessions[session_id]["status"] = "cancelled"
         await sio.emit('transcription:status', {"phase": "cancelled", "message": "Cancelado.", "sessionId": session_id}, to=sid)
         logger.info("[Socket.IO] Transcription cancelled: %s", session_id)
+"""
 
+content = re.sub(
+    r'from pathlib import Path.*?from app\.config import VAULT_PATH',
+    new_imports,
+    content,
+    flags=re.DOTALL
+)
 
-logger = logging.getLogger("app.server")
+# 2. Replace _sse_frame, _transcription_events and _transcription_events_dual
+# Instead of replacing, let's find the start of _sse_frame and the end of _transcription_events_dual
+start_idx = content.find("def _sse_frame")
+# Find the start of Request / Response models
+end_idx = content.find("# Request / Response models")
 
-# Shared network monitor — start once at module load so is_online is meaningful
-_net_mon = network_monitor.NetworkMonitor()
-_net_mon.start()
-
-# Ensure DB schema exists at module load
-db.initialize_db()
-
-# In-memory session registry (D-08: enables resume on reconnect)
-_active_sessions: dict[str, dict] = {}
-_session_lock = threading.Lock()
-
-
-# ---------------------------------------------------------------------------
-# SSE helper
-# ---------------------------------------------------------------------------
-
-
-
+new_tasks = """
 # ---------------------------------------------------------------------------
 # Background tasks for Socket.IO emission
 # ---------------------------------------------------------------------------
@@ -92,7 +79,7 @@ async def _emit_transcription_task(
     running_loop = asyncio.get_running_loop()
 
     def chunk_callback(chunk_text: str) -> None:
-        preview = chunk_text[:40].replace('\n', '\\n')
+        preview = chunk_text[:40].replace('\\n', '\\\\n')
         logger.debug("[CHUNK-IN] len=%d preview='%s'", len(chunk_text), preview)
         running_loop.call_soon_threadsafe(queue.put_nowait, ("CHUNK", chunk_text))
 
@@ -345,39 +332,29 @@ async def _emit_transcription_task_dual(
         await sio.emit("transcription:status", {"phase": "done", "message": "Transcrição dual concluída!", "sessionId": session_id}, to=client_sid)
         await sio.emit("transcription:done", {"sessionId": session_id, "totalChunks": chunks_received}, to=client_sid)
 
-# Request / Response models
-# ---------------------------------------------------------------------------
+"""
 
-class TranscriptionStatusResponse(BaseModel):
-    session_id: str | None
-    accumulated_text: str
-    status: str  # "streaming" | "done" | "error"
+# find previous newline before _sse_frame
+start_idx = content.rfind('\n', 0, start_idx) + 1
+content = content[:start_idx] + new_tasks + content[end_idx:]
 
+# 3. Update POST /transcribe
+old_transcribe = '''@app.post("/transcribe")
+async def transcribe(
+    audio: UploadFile = File(...),
+    session_id: Annotated[str | None, Form()] = None,
+    prompt_text: Annotated[str, Form()] = "",
+    keywords: Annotated[str, Form()] = "",
+    mode: Annotated[str, Form()] = "auto",
+    source: Annotated[str, Form()] = "mic",
+):
+    """POST /transcribe — Accept audio file, stream transcription via SSE.
 
-class CancelResponse(BaseModel):
-    ok: bool
-    message: str
-
-
-# ---------------------------------------------------------------------------
-# FastAPI app
-# ---------------------------------------------------------------------------
-
-app = FastAPI(title="Transcribe Assistant API")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# Wrap the FastAPI app in the Socket.IO ASGI App
-socket_app = socketio.ASGIApp(sio, other_asgi_app=app)
-
-
-@app.post("/transcribe")
+    If session_id is provided and exists, resume that session (D-08).
+    """
+    print(f"[SERVER] POST /transcribe recebido | mode={mode} | source={source}")'''
+    
+new_transcribe = '''@app.post("/transcribe")
 async def transcribe(
     audio: UploadFile = File(...),
     session_id: Annotated[str | None, Form()] = None,
@@ -391,36 +368,29 @@ async def transcribe(
     if not x_socket_id:
         raise HTTPException(status_code=400, detail="X-Socket-ID header required")
 
-    print(f"[SERVER] POST /transcribe recebido | mode={mode} | source={source}")
-    # Read in chunks to enforce 100MB limit without loading full file into RAM
-    MAX_SIZE = 100 * 1024 * 1024
-    audio_bytes = b""
-    while chunk := await audio.read(1024 * 1024):  # 1MB chunks
-        audio_bytes += chunk
-        if len(audio_bytes) > MAX_SIZE:
-            raise HTTPException(status_code=413, detail="File too large (max 100MB)")
-    if len(audio_bytes) == 0:
-        raise HTTPException(status_code=400, detail="Empty audio file")
+    print(f"[SERVER] POST /transcribe recebido | mode={mode} | source={source}")'''
 
-    # Persist to a temp file consumed by the transcriber
-    suffix = Path(audio.filename).suffix if audio.filename else ".wav"
-    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as f:
-        f.write(audio_bytes)
-        temp_path = Path(f.name)
+content = content.replace(old_transcribe, new_transcribe)
 
-    # Resolve or create session
-    sid = session_id if (session_id and session_id in _active_sessions) else None
-    if sid is None:
-        sid = str(uuid.uuid4())
+old_transcribe_end = '''    # Wrapper generator that emits initial status events before the main stream
+    async def _stream_with_status():
+        import json as _json
+        yield _sse_frame("status", _json.dumps({"phase": "received", "message": "Áudio recebido, preparando..."}, ensure_ascii=False))
+        yield _sse_frame("status", _json.dumps({"phase": "saved", "message": "Arquivo salvo, iniciando processamento..."}, ensure_ascii=False))
+        async for frame in _transcription_events(sid, temp_path, prompt_text, keywords_list, mode, source):
+            yield frame
 
-    with _session_lock:
-        _active_sessions[sid] = {"accumulated_text": "", "status": "pending", "temp_path": str(temp_path)}
+    return StreamingResponse(
+        _stream_with_status(),
+        media_type="text/event-stream",
+        headers={
+            "X-Session-ID": sid,
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+        },
+    )'''
 
-    keywords_list = [k.strip() for k in keywords.split(",") if k.strip()] if keywords else []
-
-    logger.info("Starting transcription session=%s mode=%s", sid, mode)
-
-    with _session_lock:
+new_transcribe_end = '''    with _session_lock:
         _active_sessions[sid]["client_sid"] = x_socket_id
         _active_sessions[sid]["seq_counter"] = 0
         _active_sessions[sid]["unacked_buffer"] = []
@@ -435,34 +405,25 @@ async def transcribe(
     return JSONResponse(
         content={"sessionId": sid, "status": "accepted"},
         status_code=202
-    )
+    )'''
 
+content = content.replace(old_transcribe_end, new_transcribe_end)
 
-@app.get("/transcribe/status/{session_id}", response_model=TranscriptionStatusResponse)
-async def get_status(session_id: str):
-    """GET /transcribe/status/{session_id} — Return accumulated text + status."""
-    with _session_lock:
-        if session_id not in _active_sessions:
-            raise HTTPException(status_code=404, detail="Session not found")
-        session = _active_sessions[session_id]
-    return TranscriptionStatusResponse(
-        session_id=session_id,
-        accumulated_text=session["accumulated_text"],
-        status=session["status"],
-    )
+# 4. Update POST /transcribe/dual
+old_transcribe_dual = '''@app.post("/transcribe/dual")
+async def transcribe_dual(
+    mic_audio: UploadFile = File(...),
+    sys_audio: UploadFile = File(...),
+    session_id: Annotated[str | None, Form()] = None,
+    prompt_text: Annotated[str, Form()] = "",
+    keywords: Annotated[str, Form()] = "",
+):
+    """POST /transcribe/dual — Accept two audio files for dual mode transcription.
 
+    Streams merged transcription via SSE.
+    """'''
 
-@app.delete("/transcribe/{session_id}", response_model=CancelResponse)
-async def cancel_session(session_id: str):
-    """DELETE /transcribe/{session_id} — Cancel / forget a session (idempotent)."""
-    with _session_lock:
-        temp_path_str = _active_sessions.pop(session_id, {}).get("temp_path")
-    if temp_path_str:
-        Path(temp_path_str).unlink(missing_ok=True)
-    return CancelResponse(ok=True, message="Session cancelled")
-
-
-@app.post("/transcribe/dual")
+new_transcribe_dual = '''@app.post("/transcribe/dual")
 async def transcribe_dual(
     mic_audio: UploadFile = File(...),
     sys_audio: UploadFile = File(...),
@@ -473,48 +434,29 @@ async def transcribe_dual(
 ):
     """POST /transcribe/dual — Accept two audio files for dual mode transcription."""
     if not x_socket_id:
-        raise HTTPException(status_code=400, detail="X-Socket-ID header required")
-    print(f"[SERVER] POST /transcribe/dual received")
+        raise HTTPException(status_code=400, detail="X-Socket-ID header required")'''
 
-    MAX_SIZE = 100 * 1024 * 1024  # 100MB per file
+content = content.replace(old_transcribe_dual, new_transcribe_dual)
 
-    mic_bytes = b""
-    while chunk := await mic_audio.read(1024 * 1024):
-        mic_bytes += chunk
-        if len(mic_bytes) > MAX_SIZE:
-            raise HTTPException(status_code=413, detail="Mic audio too large (max 100MB)")
-    if len(mic_bytes) == 0:
-        raise HTTPException(status_code=400, detail="Empty mic audio")
+old_transcribe_dual_end = '''    logger.info("Starting dual transcription session=%s", sid)
 
-    sys_bytes = b""
-    while chunk := await sys_audio.read(1024 * 1024):
-        sys_bytes += chunk
-        if len(sys_bytes) > MAX_SIZE:
-            raise HTTPException(status_code=413, detail="System audio too large (max 100MB)")
-    if len(sys_bytes) == 0:
-        raise HTTPException(status_code=400, detail="Empty system audio")
+    async def _stream_with_status():
+        import json as _json
+        yield _sse_frame("status", _json.dumps({"phase": "received", "message": "Audios dual recebidos..."}, ensure_ascii=False))
+        async for frame in _transcription_events_dual(sid, mic_path, sys_path, prompt_text, keywords_list):
+            yield frame
 
-    sid = session_id or str(uuid.uuid4())
+    return StreamingResponse(
+        _stream_with_status(),
+        media_type="text/event-stream",
+        headers={
+            "X-Session-ID": sid,
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+        },
+    )'''
 
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav", prefix=f"mic_{sid[:8]}_") as f:
-        f.write(mic_bytes)
-        mic_path = Path(f.name)
-
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav", prefix=f"sys_{sid[:8]}_") as f:
-        f.write(sys_bytes)
-        sys_path = Path(f.name)
-
-    with _session_lock:
-        _active_sessions[sid] = {
-            "accumulated_text": "",
-            "status": "pending",
-            "temp_mic_path": str(mic_path),
-            "temp_sys_path": str(sys_path),
-        }
-
-    keywords_list = [k.strip() for k in keywords.split(",") if k.strip()] if keywords else []
-
-    with _session_lock:
+new_transcribe_dual_end = '''    with _session_lock:
         _active_sessions[sid]["client_sid"] = x_socket_id
         _active_sessions[sid]["seq_counter"] = 0
         _active_sessions[sid]["unacked_buffer"] = []
@@ -527,265 +469,47 @@ async def transcribe_dual(
     return JSONResponse(
         content={"sessionId": sid, "status": "accepted"},
         status_code=202
-    )
+    )'''
 
+content = content.replace(old_transcribe_dual_end, new_transcribe_dual_end)
 
-# ---------------------------------------------------------------------------
-# Prompt management
-# ---------------------------------------------------------------------------
+# 5. ASGI Mount & Uvicorn entrypoint
+old_mount = '''app = FastAPI(title="Transcribe Assistant API")
 
-from pydantic import BaseModel as PydanticBaseModel
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)'''
 
+new_mount = '''app = FastAPI(title="Transcribe Assistant API")
 
-class PromptResponse(PydanticBaseModel):
-    id: int | None = None
-    nome: str = ""
-    texto_prompt: str = ""
-    keywords: list[str] = []
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
+# Wrap the FastAPI app in the Socket.IO ASGI App
+socket_app = socketio.ASGIApp(sio, other_app=app)'''
 
-class PromptUpdateRequest(PydanticBaseModel):
-    nome: str
-    texto_prompt: str
-    keywords: list[str]
+content = content.replace(old_mount, new_mount)
 
+old_main = '''if __name__ == "__main__":
+    import uvicorn
+    print(f"Starting Transcribe SSE server on port {_SERVER_PORT}")
+    uvicorn.run("app.server:app", host="127.0.0.1", port=_SERVER_PORT, reload=False)'''
 
-@app.get("/prompt/default", response_model=PromptResponse)
-async def get_default_prompt():
-    """GET /prompt/default — Return the default prompt and its keywords."""
-    default = db.get_default_prompt()
-    if not default:
-        return PromptResponse()
-    keywords = [
-        row["palavra"] for row in db.get_keywords_by_prompt(default["id"])
-    ]
-    return PromptResponse(
-        id=default["id"],
-        nome=default["nome"],
-        texto_prompt=default["texto_prompt"],
-        keywords=keywords,
-    )
-
-
-@app.put("/prompt/default", response_model=PromptResponse)
-async def update_default_prompt(body: PromptUpdateRequest):
-    """PUT /prompt/default — Update or create the default prompt and keywords."""
-    if not body.nome.strip():
-        raise HTTPException(status_code=400, detail="Nome nao pode ser vazio")
-
-    default = db.get_default_prompt()
-    if default:
-        db.update_prompt(default["id"], body.nome, body.texto_prompt, is_default=True)
-        pid = default["id"]
-    else:
-        pid = db.create_prompt(body.nome, body.texto_prompt, is_default=True)
-
-    db.replace_keywords(pid, body.keywords)
-
-    keywords = [
-        row["palavra"] for row in db.get_keywords_by_prompt(pid)
-    ]
-    return PromptResponse(
-        id=pid,
-        nome=body.nome,
-        texto_prompt=body.texto_prompt,
-        keywords=keywords,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Settings Management
-# ---------------------------------------------------------------------------
-
-class SettingsResponse(PydanticBaseModel):
-    gemini_key_configured: bool
-    gemini_key_masked: str
-    gemini_model: str
-    groq_key_configured: bool
-    groq_key_masked: str
-    groq_review_model: str
-    app_language: str
-    vault_path: str
-    dual_intermediary_path: str
-    network_ping_host: str
-    network_ping_port: int
-    network_check_interval: int
-    tray_enabled: bool
-    persistent_notifications_enabled: bool
-    alert_interval: int
-    alert_transcription_types: str
-
-
-class SettingsUpdateRequest(PydanticBaseModel):
-    gemini_key: str | None = None
-    gemini_model: str | None = None
-    groq_key: str | None = None
-    groq_review_model: str | None = None
-    app_language: str | None = None
-    vault_path: str | None = None
-    dual_intermediary_path: str | None = None
-    network_ping_host: str | None = None
-    network_ping_port: int | None = None
-    network_check_interval: int | None = None
-    tray_enabled: bool | None = None
-    persistent_notifications_enabled: bool | None = None
-    alert_interval: int | None = None
-    alert_transcription_types: str | None = None
-
-
-class FetchModelsRequest(PydanticBaseModel):
-    gemini_key: str | None = None
-    groq_key: str | None = None
-
-
-class FetchModelsResponse(PydanticBaseModel):
-    gemini_models: list[str]
-    groq_models: list[str]
-
-
-def _get_masked_key(key: str) -> str:
-    if not key:
-        return ""
-    if len(key) <= 8:
-        return "********"
-    return f"{key[:6]}...{key[-4:]}"
-
-
-@app.get("/settings", response_model=SettingsResponse)
-async def get_settings():
-    """GET /settings — Retrieve current application configurations with masked keys."""
-    import app.config as config
-    config.load_all_settings()
-    return SettingsResponse(
-        gemini_key_configured=bool(config.GOOGLE_API_KEY),
-        gemini_key_masked=_get_masked_key(config.GOOGLE_API_KEY),
-        gemini_model=config.GEMINI_MODEL,
-        groq_key_configured=bool(config.GROQ_API_KEY),
-        groq_key_masked=_get_masked_key(config.GROQ_API_KEY),
-        groq_review_model=config.GROQ_REVIEW_MODEL,
-        app_language=config.APP_LANGUAGE,
-        vault_path=str(config.VAULT_PATH),
-        dual_intermediary_path=str(config.DUAL_INTERMEDIARY_PATH),
-        network_ping_host=config.NETWORK_PING_HOST,
-        network_ping_port=config.NETWORK_PING_PORT,
-        network_check_interval=config.NETWORK_CHECK_INTERVAL,
-        tray_enabled=config.TRAY_ENABLED,
-        persistent_notifications_enabled=config.PERSISTENT_NOTIFICATIONS_ENABLED,
-        alert_interval=config.ALERT_INTERVAL,
-        alert_transcription_types=config.ALERT_TRANSCRIPTION_TYPES,
-    )
-
-
-@app.put("/settings", response_model=CancelResponse)
-async def update_settings(body: SettingsUpdateRequest):
-    """PUT /settings — Update application configurations, encrypting keys if updated."""
-    import app.config as config
-    import app.database as db
-    import app.security as sec
-
-    # Read current keys to handle masking logic
-    config.load_all_settings()
-
-    # 1. Gemini Key
-    if body.gemini_key is not None:
-        gkey = body.gemini_key.strip()
-        if "..." in gkey or "********" in gkey or (len(gkey) > 0 and gkey.endswith("XXXX")):
-            pass
-        elif gkey == "":
-            db.set_setting("GOOGLE_API_KEY", "")
-        else:
-            db.set_setting("GOOGLE_API_KEY", sec.encrypt_value(gkey))
-
-    # 2. Gemini Model
-    if body.gemini_model is not None:
-        db.set_setting("GEMINI_MODEL", body.gemini_model.strip())
-
-    # 3. Groq Key
-    if body.groq_key is not None:
-        gqkey = body.groq_key.strip()
-        if "..." in gqkey or "********" in gqkey or (len(gqkey) > 0 and gqkey.endswith("XXXX")):
-            pass
-        elif gqkey == "":
-            db.set_setting("GROQ_API_KEY", "")
-        else:
-            db.set_setting("GROQ_API_KEY", sec.encrypt_value(gqkey))
-
-    # 4. Groq Review Model
-    if body.groq_review_model is not None:
-        db.set_setting("GROQ_REVIEW_MODEL", body.groq_review_model.strip())
-
-    # 5. Language
-    if body.app_language is not None:
-        db.set_setting("APP_LANGUAGE", body.app_language.strip())
-
-    # 6. Paths
-    if body.vault_path is not None:
-        db.set_setting("VAULT_PATH", body.vault_path.strip())
-    if body.dual_intermediary_path is not None:
-        db.set_setting("DUAL_INTERMEDIARY_PATH", body.dual_intermediary_path.strip())
-
-    # 7. Network
-    if body.network_ping_host is not None:
-        db.set_setting("NETWORK_PING_HOST", body.network_ping_host.strip())
-    if body.network_ping_port is not None:
-        db.set_setting("NETWORK_PING_PORT", str(body.network_ping_port))
-    if body.network_check_interval is not None:
-        db.set_setting("NETWORK_CHECK_INTERVAL", str(body.network_check_interval))
-
-    # 8. Tray & Alerts
-    if body.tray_enabled is not None:
-        db.set_setting("TRAY_ENABLED", str(body.tray_enabled))
-    if body.persistent_notifications_enabled is not None:
-        db.set_setting("PERSISTENT_NOTIFICATIONS_ENABLED", str(body.persistent_notifications_enabled))
-    if body.alert_interval is not None:
-        db.set_setting("ALERT_INTERVAL", str(body.alert_interval))
-    if body.alert_transcription_types is not None:
-        db.set_setting("ALERT_TRANSCRIPTION_TYPES", body.alert_transcription_types.strip())
-
-    # Propagate changes to config in-memory globals
-    config.reload_config()
-
-    return CancelResponse(ok=True, message="Configurações salvas com sucesso")
-
-
-@app.post("/settings/models", response_model=FetchModelsResponse)
-async def fetch_models(body: FetchModelsRequest):
-    """POST /settings/models — Dynamically fetch models available for Gemini and Groq."""
-    import app.config as config
-    from app.models_fetcher import fetch_gemini_models, fetch_groq_models
-
-    config.load_all_settings()
-
-    # Determine Gemini Key
-    gemini_key = body.gemini_key
-    if gemini_key is not None:
-        gemini_key = gemini_key.strip()
-        if "..." in gemini_key or "********" in gemini_key or gemini_key == "":
-            gemini_key = config.GOOGLE_API_KEY
-    else:
-        gemini_key = config.GOOGLE_API_KEY
-
-    # Determine Groq Key
-    groq_key = body.groq_key
-    if groq_key is not None:
-        groq_key = groq_key.strip()
-        if "..." in groq_key or "********" in groq_key or groq_key == "":
-            groq_key = config.GROQ_API_KEY
-    else:
-        groq_key = config.GROQ_API_KEY
-
-    # Fetch models
-    gemini_list = fetch_gemini_models(gemini_key)
-    groq_list = fetch_groq_models(groq_key)
-
-    return FetchModelsResponse(
-        gemini_models=gemini_list,
-        groq_models=groq_list
-    )
-
-
-# Allow `python -m app.server` or `uvicorn app.server:app`
-if __name__ == "__main__":
+new_main = '''if __name__ == "__main__":
     import uvicorn
     print(f"Starting Transcribe Socket.IO server on port {_SERVER_PORT}")
-    uvicorn.run("app.server:socket_app", host="127.0.0.1", port=_SERVER_PORT, reload=False)
+    uvicorn.run("app.server:socket_app", host="127.0.0.1", port=_SERVER_PORT, reload=False)'''
+
+content = content.replace(old_main, new_main)
+
+Path("app/server.py").write_text(content)
+print("done")

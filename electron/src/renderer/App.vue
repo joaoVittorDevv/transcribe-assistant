@@ -5,7 +5,19 @@
 </template>
 
 <script setup lang="ts">
+import { onMounted, onUnmounted } from 'vue';
 import MainWorkspace from './components/layout/MainWorkspace.vue';
+import { useSocket } from './composables/useSocket';
+
+const { connect, disconnect } = useSocket();
+
+onMounted(() => {
+  connect();
+});
+
+onUnmounted(() => {
+  disconnect();
+});
 </script>
 
 <style>
