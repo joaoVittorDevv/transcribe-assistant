@@ -7,6 +7,12 @@ import fs from 'fs';
 declare const MAIN_WINDOW_VITE_DEV_SERVER_URL: string;
 declare const MAIN_WINDOW_VITE_NAME: string;
 
+// ponytail: fix black screen/crash on hosts with a broken GPU stack (this dev
+// machine's GPU process dies at launch). Remove when not needed.
+if (process.env.TRANSCRIBE_DISABLE_GPU !== '0') {
+  app.disableHardwareAcceleration();
+}
+
 const __filename = url.fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
