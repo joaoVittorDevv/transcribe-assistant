@@ -145,9 +145,12 @@ def _stop(session_id: str = "", socket_id: str = "", prompt: str = "", keywords:
     if _recorder is None:
         return None
     try:
-        # Save to Vault so audio is persisted even if transcription fails
-        result = _recorder.stop_recording(save_dir=VAULT_PATH)
-    except Exception:
+        # Recordings are durable source data, never disposable request files.
+        recordings_dir = VAULT_PATH / "recordings" / "pending"
+        result = _recorder.stop_recording(save_dir=recordings_dir)
+    except Exception as exc:
+        sys.stderr.write(f"[AudioEngine] Failed to save recording: {exc}\n")
+        sys.stderr.flush()
         result = None
     _active = False
 

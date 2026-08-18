@@ -185,9 +185,8 @@ export function useTranscriptionState() {
       const resData = await response.json();
       sessionId.value = resData.sessionId;
 
-      // Clean up files locally (server makes a copy)
-      if (micPath) api.deleteFile(micPath).catch(() => {});
-      if (sysPath) api.deleteFile(sysPath).catch(() => {});
+      // Keep source recordings in Vault. They are the durable recovery copy if
+      // the provider, server, or UI fails after accepting the request.
 
     } catch (err: any) {
       if (err?.name === 'AbortError') {
@@ -272,9 +271,8 @@ export function useTranscriptionState() {
       const resData = await response.json();
       sessionId.value = resData.sessionId;
 
-      if (wavPath) {
-        api.deleteFile(wavPath).catch(() => {});
-      }
+      // Keep the source recording in Vault until retention cleanup explicitly
+      // removes it. HTTP acceptance does not mean transcription succeeded.
 
     } catch (err: any) {
       // AbortError is expected when user cancels — not an error
@@ -445,15 +443,10 @@ export function useTranscriptionState() {
         clearInterval(wavCheckInterval);
         wavCheckInterval = null;
       }
-      // Clean up Vault WAV file if we have one
-      if (pendingWavPaths) {
-        if (pendingWavPaths.mic) api.deleteFile(pendingWavPaths.mic).catch(() => {});
-        if (pendingWavPaths.sys) api.deleteFile(pendingWavPaths.sys).catch(() => {});
-        pendingWavPaths = null;
-      } else if (pendingWavPath) {
-        api.deleteFile(pendingWavPath).catch(() => {});
-        pendingWavPath = null;
-      }
+      // Audio files stay in Vault/recordings — cancelling the job must never
+      // delete the recording itself. Retention handles cleanup later.
+      pendingWavPaths = null;
+      pendingWavPath = null;
       state.value = 'IDLE';
       elapsedSeconds.value = 0;
       sessionId.value = null;
