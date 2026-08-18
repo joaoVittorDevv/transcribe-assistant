@@ -73,6 +73,28 @@ def initialize_db() -> None:
                 criado_em             DATETIME DEFAULT (datetime('now')),
                 atualizado_em         DATETIME DEFAULT (datetime('now'))
             );
+
+            CREATE TABLE IF NOT EXISTS transcription_jobs (
+                id                  TEXT PRIMARY KEY,
+                status              TEXT NOT NULL,
+                source              TEXT NOT NULL,
+                mode                TEXT NOT NULL,
+                audio_paths         TEXT NOT NULL,
+                prompt_text         TEXT NOT NULL DEFAULT '',
+                keywords            TEXT NOT NULL DEFAULT '[]',
+                client_sid          TEXT,
+                provider            TEXT,
+                attempts_google     INTEGER NOT NULL DEFAULT 0,
+                attempts_groq       INTEGER NOT NULL DEFAULT 0,
+                next_retry_at       DATETIME,
+                last_error          TEXT,
+                accumulated_text    TEXT NOT NULL DEFAULT '',
+                created_at          DATETIME NOT NULL DEFAULT (datetime('now')),
+                updated_at          DATETIME NOT NULL DEFAULT (datetime('now'))
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_transcription_jobs_status_retry
+                ON transcription_jobs(status, next_retry_at);
         """)
 
         # Migration: Add titulo column if it doesn't exist
@@ -277,6 +299,72 @@ def delete_session(session_id: int) -> None:
     """Delete a session from the database."""
     with _connect() as conn:
         conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+
+
+# ---------------------------------------------------------------------------
+# Durable transcription jobs
+# ---------------------------------------------------------------------------
+
+
+def create_transcription_job(
+    job_id: str,
+    *,
+    audio_paths: str,
+    source: str,
+    mode: str,
+    prompt_text: str = "",
+    keywords: str = "[]",
+    client_sid: str | None = None,
+) -> None:
+    """Persist a transcription job before any provider call starts."""
+    with _connect() as conn:
+        conn.execute(
+            """INSERT INTO transcription_jobs
+               (id, status, source, mode, audio_paths, prompt_text, keywords, client_sid)
+               VALUES (?, 'queued', ?, ?, ?, ?, ?, ?)""",
+            (job_id, source, mode, audio_paths, prompt_text, keywords, client_sid),
+        )
+
+
+def update_transcription_job(job_id: str, **fields: object) -> None:
+    """Update an allow-listed set of job fields atomically."""
+    allowed = {
+        "status", "mode", "client_sid", "provider", "attempts_google", "attempts_groq",
+        "next_retry_at", "last_error", "accumulated_text",
+    }
+    values = {key: value for key, value in fields.items() if key in allowed}
+    if not values:
+        return
+    assignments = ", ".join(f"{key} = ?" for key in values)
+    with _connect() as conn:
+        conn.execute(
+            f"UPDATE transcription_jobs SET {assignments}, "
+            "updated_at = datetime('now') WHERE id = ?",
+            (*values.values(), job_id),
+        )
+
+
+def get_transcription_job(job_id: str) -> sqlite3.Row | None:
+    with _connect() as conn:
+        return conn.execute(
+            "SELECT * FROM transcription_jobs WHERE id = ?", (job_id,)
+        ).fetchone()
+
+
+def get_recoverable_transcription_jobs() -> list[sqlite3.Row]:
+    """Return unfinished jobs, resetting interrupted work for retry."""
+    with _connect() as conn:
+        conn.execute(
+            """UPDATE transcription_jobs SET status = 'queued',
+               updated_at = datetime('now')
+               WHERE status IN ('uploading_google', 'processing_google',
+                                'processing_groq')"""
+        )
+        return conn.execute(
+            """SELECT * FROM transcription_jobs
+               WHERE status IN ('queued', 'retry_wait', 'failed_retryable')
+               ORDER BY created_at"""
+        ).fetchall()
 
 
 # ---------------------------------------------------------------------------

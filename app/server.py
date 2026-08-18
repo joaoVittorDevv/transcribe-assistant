@@ -6,6 +6,7 @@ DELETE /transcribe/{session_id}      — Cancels a session (idempotent).
 """
 
 import asyncio
+import json
 import logging
 import os
 import tempfile
@@ -26,6 +27,7 @@ from pydantic import BaseModel
 
 from app import database as db, network_monitor, transcriber
 from app.config import VAULT_PATH
+from app.job_worker import TranscriptionJobWorker
 
 # Socket.IO setup
 sio = socketio.AsyncServer(
@@ -364,6 +366,30 @@ class CancelResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 app = FastAPI(title="Transcribe Assistant API")
+_job_worker: TranscriptionJobWorker | None = None
+
+
+async def _emit_job_event(event: str, payload: dict) -> None:
+    """Best-effort notification; persisted job state remains authoritative."""
+    job = db.get_transcription_job(payload.get("sessionId", ""))
+    target = job["client_sid"] if job and "client_sid" in job.keys() else None
+    await sio.emit(event, payload, to=target)
+
+
+@app.on_event("startup")
+async def start_job_worker() -> None:
+    global _job_worker
+    _job_worker = TranscriptionJobWorker(
+        is_online_fn=lambda: _net_mon.is_online,
+        emit=_emit_job_event,
+    )
+    _job_worker.start()
+
+
+@app.on_event("shutdown")
+async def stop_job_worker() -> None:
+    if _job_worker:
+        await _job_worker.stop()
 
 app.add_middleware(
     CORSMiddleware,
@@ -377,157 +403,135 @@ app.add_middleware(
 socket_app = socketio.ASGIApp(sio, other_asgi_app=app)
 
 
+# ---------------------------------------------------------------------------
+# Durable transcription jobs (SQLite-backed queue)
+# ---------------------------------------------------------------------------
+
+
+class TranscribeJobRequest(BaseModel):
+    audio_paths: list[str]
+    prompt_text: str = ""
+    keywords: str = ""
+    mode: str = "auto"  # auto | gemini | groq
+    source: str = "mic"  # mic | system | dual
+    socket_id: str = ""
+
+
+def _validate_recording_paths(paths: list[str]) -> list[Path]:
+    """Only files inside Vault/recordings may be queued — never arbitrary paths."""
+    recordings_root = (VAULT_PATH / "recordings").resolve()
+    resolved = []
+    for p in paths:
+        rp = Path(p).resolve()
+        if not str(rp).startswith(str(recordings_root)):
+            raise HTTPException(status_code=400, detail=f"Path fora do Vault: {p}")
+        resolved.append(rp)
+    if not resolved:
+        raise HTTPException(status_code=400, detail="audio_paths vazio")
+    return resolved
+
+
 @app.post("/transcribe")
-async def transcribe(
-    audio: UploadFile = File(...),
-    session_id: Annotated[str | None, Form()] = None,
-    prompt_text: Annotated[str, Form()] = "",
-    keywords: Annotated[str, Form()] = "",
-    mode: Annotated[str, Form()] = "auto",
-    source: Annotated[str, Form()] = "mic",
-    x_socket_id: str | None = Header(None, alias="X-Socket-ID"),
-):
-    """POST /transcribe — Accept audio file, stream transcription via Socket.IO."""
-    if not x_socket_id:
-        raise HTTPException(status_code=400, detail="X-Socket-ID header required")
+async def transcribe(body: TranscribeJobRequest):
+    """POST /transcribe — Queue a durable transcription job for local audio files."""
+    paths = _validate_recording_paths(body.audio_paths)
+    missing = [str(p) for p in paths if not p.exists()]
+    if missing:
+        raise HTTPException(status_code=400, detail=f"Áudio não encontrado: {missing}")
 
-    print(f"[SERVER] POST /transcribe recebido | mode={mode} | source={source}")
-    # Read in chunks to enforce 100MB limit without loading full file into RAM
-    MAX_SIZE = 100 * 1024 * 1024
-    audio_bytes = b""
-    while chunk := await audio.read(1024 * 1024):  # 1MB chunks
-        audio_bytes += chunk
-        if len(audio_bytes) > MAX_SIZE:
-            raise HTTPException(status_code=413, detail="File too large (max 100MB)")
-    if len(audio_bytes) == 0:
-        raise HTTPException(status_code=400, detail="Empty audio file")
-
-    # Persist to a temp file consumed by the transcriber
-    suffix = Path(audio.filename).suffix if audio.filename else ".wav"
-    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as f:
-        f.write(audio_bytes)
-        temp_path = Path(f.name)
-
-    # Resolve or create session
-    sid = session_id if (session_id and session_id in _active_sessions) else None
-    if sid is None:
-        sid = str(uuid.uuid4())
-
-    with _session_lock:
-        _active_sessions[sid] = {"accumulated_text": "", "status": "pending", "temp_path": str(temp_path)}
-
-    keywords_list = [k.strip() for k in keywords.split(",") if k.strip()] if keywords else []
-
-    logger.info("Starting transcription session=%s mode=%s", sid, mode)
-
-    with _session_lock:
-        _active_sessions[sid]["client_sid"] = x_socket_id
-        _active_sessions[sid]["seq_counter"] = 0
-        _active_sessions[sid]["unacked_buffer"] = []
-
-    # Emit initial status via Socket.IO
-    sio.start_background_task(sio.emit, "transcription:status", {"phase": "received", "message": "Áudio recebido, preparando...", "sessionId": sid}, to=x_socket_id)
-    sio.start_background_task(sio.emit, "transcription:status", {"phase": "saved", "message": "Arquivo salvo, iniciando processamento...", "sessionId": sid}, to=x_socket_id)
-
-    # Start the actual transcription task in background
-    sio.start_background_task(_emit_transcription_task, sid, temp_path, prompt_text, keywords_list, mode, source, x_socket_id)
-
-    return JSONResponse(
-        content={"sessionId": sid, "status": "accepted"},
-        status_code=202
+    job_id = str(uuid.uuid4())
+    keywords = [k.strip() for k in body.keywords.split(",") if k.strip()] if body.keywords else []
+    db.create_transcription_job(
+        job_id,
+        audio_paths=json.dumps([str(p) for p in paths]),
+        source=body.source,
+        mode=body.mode,
+        prompt_text=body.prompt_text,
+        keywords=json.dumps(keywords),
+        client_sid=body.socket_id or None,
     )
+    logger.info("Queued job=%s mode=%s source=%s files=%d", job_id, body.mode, body.source, len(paths))
+    if _job_worker:
+        _job_worker.wake()
+    return JSONResponse(content={"sessionId": job_id, "status": "queued"}, status_code=202)
+
+
+@app.get("/jobs/{job_id}")
+async def get_job(job_id: str):
+    """GET /jobs/{job_id} — Authoritative job state for UI reconciliation."""
+    job = db.get_transcription_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job não encontrado")
+    return {
+        "id": job["id"],
+        "status": job["status"],
+        "provider": job["provider"],
+        "text": job["accumulated_text"],
+        "lastError": job["last_error"],
+        "nextRetryAt": job["next_retry_at"],
+        "audioPaths": json.loads(job["audio_paths"]),
+        "updatedAt": job["updated_at"],
+    }
+
+
+@app.post("/jobs/{job_id}/retry")
+async def retry_job(job_id: str, body: TranscribeJobRequest | None = None):
+    """POST /jobs/{job_id}/retry — Requeue a failed job. Audio is never deleted."""
+    job = db.get_transcription_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job não encontrado")
+    if job["status"] not in ("failed_retryable", "failed_permanent", "retry_wait", "cancelled"):
+        raise HTTPException(status_code=409, detail=f"Job em estado não-retentável: {job['status']}")
+    update: dict = {"status": "queued", "next_retry_at": None, "last_error": None}
+    if body and body.socket_id:
+        update["client_sid"] = body.socket_id
+    db.update_transcription_job(job_id, **update)
+    if _job_worker:
+        _job_worker.wake()
+    return {"ok": True, "status": "queued"}
+
+
+@app.post("/jobs/{job_id}/cancel")
+async def cancel_job(job_id: str):
+    """POST /jobs/{job_id}/cancel — Stop processing; audio is never deleted."""
+    job = db.get_transcription_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job não encontrado")
+    if job["status"] in ("completed", "cancelled"):
+        return {"ok": True, "status": job["status"]}
+    if _job_worker and job["status"].startswith("processing"):
+        _job_worker.cancel_job(job_id)
+    else:
+        db.update_transcription_job(job_id, status="cancelled")
+    return {"ok": True, "status": "cancelled"}
 
 
 @app.get("/transcribe/status/{session_id}", response_model=TranscriptionStatusResponse)
 async def get_status(session_id: str):
-    """GET /transcribe/status/{session_id} — Return accumulated text + status."""
-    with _session_lock:
-        if session_id not in _active_sessions:
-            raise HTTPException(status_code=404, detail="Session not found")
-        session = _active_sessions[session_id]
+    """GET /transcribe/status/{session_id} — Back-compat view over the jobs table."""
+    job = db.get_transcription_job(session_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Session not found")
     return TranscriptionStatusResponse(
         session_id=session_id,
-        accumulated_text=session["accumulated_text"],
-        status=session["status"],
+        accumulated_text=job["accumulated_text"],
+        status=job["status"],
     )
 
 
 @app.delete("/transcribe/{session_id}", response_model=CancelResponse)
 async def cancel_session(session_id: str):
-    """DELETE /transcribe/{session_id} — Cancel / forget a session (idempotent)."""
-    with _session_lock:
-        temp_path_str = _active_sessions.pop(session_id, {}).get("temp_path")
-    if temp_path_str:
-        Path(temp_path_str).unlink(missing_ok=True)
-    return CancelResponse(ok=True, message="Session cancelled")
-
-
-@app.post("/transcribe/dual")
-async def transcribe_dual(
-    mic_audio: UploadFile = File(...),
-    sys_audio: UploadFile = File(...),
-    session_id: Annotated[str | None, Form()] = None,
-    prompt_text: Annotated[str, Form()] = "",
-    keywords: Annotated[str, Form()] = "",
-    x_socket_id: str | None = Header(None, alias="X-Socket-ID"),
-):
-    """POST /transcribe/dual — Accept two audio files for dual mode transcription."""
-    if not x_socket_id:
-        raise HTTPException(status_code=400, detail="X-Socket-ID header required")
-    print(f"[SERVER] POST /transcribe/dual received")
-
-    MAX_SIZE = 100 * 1024 * 1024  # 100MB per file
-
-    mic_bytes = b""
-    while chunk := await mic_audio.read(1024 * 1024):
-        mic_bytes += chunk
-        if len(mic_bytes) > MAX_SIZE:
-            raise HTTPException(status_code=413, detail="Mic audio too large (max 100MB)")
-    if len(mic_bytes) == 0:
-        raise HTTPException(status_code=400, detail="Empty mic audio")
-
-    sys_bytes = b""
-    while chunk := await sys_audio.read(1024 * 1024):
-        sys_bytes += chunk
-        if len(sys_bytes) > MAX_SIZE:
-            raise HTTPException(status_code=413, detail="System audio too large (max 100MB)")
-    if len(sys_bytes) == 0:
-        raise HTTPException(status_code=400, detail="Empty system audio")
-
-    sid = session_id or str(uuid.uuid4())
-
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav", prefix=f"mic_{sid[:8]}_") as f:
-        f.write(mic_bytes)
-        mic_path = Path(f.name)
-
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav", prefix=f"sys_{sid[:8]}_") as f:
-        f.write(sys_bytes)
-        sys_path = Path(f.name)
-
-    with _session_lock:
-        _active_sessions[sid] = {
-            "accumulated_text": "",
-            "status": "pending",
-            "temp_mic_path": str(mic_path),
-            "temp_sys_path": str(sys_path),
-        }
-
-    keywords_list = [k.strip() for k in keywords.split(",") if k.strip()] if keywords else []
-
-    with _session_lock:
-        _active_sessions[sid]["client_sid"] = x_socket_id
-        _active_sessions[sid]["seq_counter"] = 0
-        _active_sessions[sid]["unacked_buffer"] = []
-
-    logger.info("Starting dual transcription session=%s", sid)
-
-    sio.start_background_task(sio.emit, "transcription:status", {"phase": "received", "message": "Audios dual recebidos...", "sessionId": sid}, to=x_socket_id)
-    sio.start_background_task(_emit_transcription_task_dual, sid, mic_path, sys_path, prompt_text, keywords_list, x_socket_id)
-
-    return JSONResponse(
-        content={"sessionId": sid, "status": "accepted"},
-        status_code=202
-    )
+    """DELETE /transcribe/{session_id} — Cancel a job (idempotent, audio preserved)."""
+    job = db.get_transcription_job(session_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if job["status"] in ("completed", "cancelled"):
+        return CancelResponse(ok=True, message=f"Job already {job['status']}")
+    if _job_worker and job["status"].startswith("processing"):
+        _job_worker.cancel_job(session_id)
+    else:
+        db.update_transcription_job(session_id, status="cancelled")
+    return CancelResponse(ok=True, message="Cancelled")
 
 
 # ---------------------------------------------------------------------------

@@ -142,38 +142,20 @@ export function useTranscriptionState() {
     }
 
     try {
-      // Read both audio files in parallel
-      const [micBuffer, sysBuffer] = await Promise.all([
-        api.readFile(micPath),
-        api.readFile(sysPath),
-      ]);
-
-      if (!micBuffer || !sysBuffer) {
-        throw new Error('Falha ao ler arquivos de áudio');
-      }
-
-      const formData = new FormData();
-      formData.append('mic_audio', new Blob([micBuffer], { type: 'audio/wav' }), 'mic.wav');
-      formData.append('sys_audio', new Blob([sysBuffer], { type: 'audio/wav' }), 'sys.wav');
-      formData.append('prompt_text', promptData.value.texto_prompt);
-      formData.append('keywords', promptData.value.keywords.join(', '));
-      formData.append('mode', 'gemini'); // Dual mode always uses Gemini
-      formData.append('source', 'dual');
-
-      console.log('[Transcription] dual mode: sending mic.wav + sys.wav to /transcribe/dual');
-
       const { socket } = useSocket();
       initSocketListeners();
-      
-      if (socket.value) {
-        formData.append('X-Socket-ID', socket.value.id || '');
-      }
-
-      const response = await fetch(`http://localhost:18763/transcribe/dual`, {
+      const response = await fetch(`http://localhost:18763/transcribe`, {
         method: 'POST',
-        body: formData,
         signal: abortController.signal,
-        headers: socket.value?.id ? { 'X-Socket-ID': socket.value.id } : {}
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          audio_paths: [micPath, sysPath],
+          prompt_text: promptData.value.texto_prompt,
+          keywords: promptData.value.keywords.join(', '),
+          mode: 'gemini',
+          source: 'dual',
+          socket_id: socket.value?.id || '',
+        }),
       });
 
       if (!response.ok) {
@@ -213,13 +195,7 @@ export function useTranscriptionState() {
     sessionId.value = null;
     const { setPhase, reset: resetProgress } = useTranscriptionProgress();
     try {
-      const arrayBuffer = await api.readFile(wavPath);
-      if (!arrayBuffer) throw new Error('Failed to read audio file');
-
-      const formData = new FormData();
-      formData.append('audio', new Blob([arrayBuffer], { type: 'audio/wav' }), 'audio.wav');
-      formData.append('prompt_text', promptData.value.texto_prompt);
-      formData.append('keywords', promptData.value.keywords.join(', '));
+      // The server receives the durable Vault path, not a disposable upload copy.
       // Determine transcription mode based on audio source and provider selection
       let transcriptionMode: string;
       if (currentMode === 'system') {
@@ -244,8 +220,6 @@ export function useTranscriptionState() {
         }
       }
       console.log('[Transcription] mode:', transcriptionMode, '| source:', currentMode, '| provider:', selectedProvider.value);
-      formData.append('mode', transcriptionMode);
-      formData.append('source', currentMode);
 
       // Dual mode uses Gemini for diarization — log hint for transparency
       if (currentMode === 'dual') {
@@ -257,9 +231,16 @@ export function useTranscriptionState() {
 
       const response = await fetch(`http://localhost:18763/transcribe`, {
         method: 'POST',
-        body: formData,
         signal: abortController.signal,
-        headers: socket.value?.id ? { 'X-Socket-ID': socket.value.id } : {}
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          audio_paths: [wavPath],
+          prompt_text: promptData.value.texto_prompt,
+          keywords: promptData.value.keywords.join(', '),
+          mode: transcriptionMode,
+          source: currentMode,
+          socket_id: socket.value?.id || '',
+        }),
       });
 
       if (!response.ok) {
