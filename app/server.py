@@ -26,6 +26,7 @@ _SERVER_PORT = int(os.environ.get("TRANSCRIBE_PORT", DEFAULT_PORT))
 from pydantic import BaseModel
 
 from app import database as db, network_monitor, transcriber
+from app.audio_recorder import AudioRecorder
 from app.config import VAULT_PATH
 from app.job_worker import TranscriptionJobWorker
 
@@ -379,6 +380,12 @@ async def _emit_job_event(event: str, payload: dict) -> None:
 @app.on_event("startup")
 async def start_job_worker() -> None:
     global _job_worker
+    # Crash recovery: convert orphaned progressive captures into playable WAVs.
+    recovered = AudioRecorder.recover_pcm_parts(
+        VAULT_PATH / "recordings" / "pending", logger=logger.warning
+    )
+    if recovered:
+        logger.warning("[Startup] %d interrupted recording(s) recovered to Vault", len(recovered))
     _job_worker = TranscriptionJobWorker(
         is_online_fn=lambda: _net_mon.is_online,
         emit=_emit_job_event,

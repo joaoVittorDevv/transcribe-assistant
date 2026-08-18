@@ -13,10 +13,12 @@ Usage:
     wav_path = recorder.stop_recording(save_dir=Path("Vault"))
 """
 
+import os
 import struct
 import subprocess
 import tempfile
 import threading
+import uuid
 from pathlib import Path
 from typing import Callable
 
@@ -29,7 +31,9 @@ _SAMPLE_RATE = 16_000  # 16 kHz — ideal for speech / Whisper
 _CHANNELS = 1  # Mono
 _DTYPE = "float32"  # sounddevice native float range [-1.0, 1.0]
 _BLOCK_SIZE = 1024  # Frames per callback — controls RMS update rate
-
+# Only this much audio stays in RAM for streaming preview. The authoritative
+# recording is the progressive PCM file on disk.
+_PREVIEW_MAX_BLOCKS = (_SAMPLE_RATE * 10) // _BLOCK_SIZE + 1
 
 
 class AudioRecorder:
@@ -46,6 +50,10 @@ class AudioRecorder:
 
     def __init__(self, on_rms_update: Callable[[float], None] | None = None) -> None:
         self._on_rms_update = on_rms_update
+        self._capture_dir: Path | None = None
+        self._capture_id: str | None = None
+        self._pcm_files: dict[str, object] = {}
+        self._pcm_paths: dict[str, Path] = {}
         self._frames: list[np.ndarray] = []
         self._lock = threading.Lock()
         self._stream: sd.InputStream | None = None
@@ -87,7 +95,9 @@ class AudioRecorder:
         """Last computed RMS value in the range [0.0, 1.0]."""
         return self._current_rms
 
-    def start_recording(self, source: str | None = None) -> None:
+    def start_recording(
+        self, source: str | None = None, capture_dir: Path | None = None
+    ) -> None:
         """Begin capturing audio from the configured source.
 
         Args:
@@ -99,6 +109,9 @@ class AudioRecorder:
 
         if source is not None:
             self.set_source(source)
+
+        if capture_dir is not None:
+            self._open_durable_capture(capture_dir)
 
         with self._lock:
             self._frames = []
@@ -226,8 +239,11 @@ class AudioRecorder:
             return
 
         chunk = indata.copy()
+        self._write_pcm("mic", chunk)
         with self._mic_lock:
             self._mic_frames.append(chunk)
+            if self._pcm_files and len(self._mic_frames) > _PREVIEW_MAX_BLOCKS:
+                del self._mic_frames[:-_PREVIEW_MAX_BLOCKS]
 
         # Compute RMS from microphone — this drives the VU meter
         rms = float(np.sqrt(np.mean(chunk**2)))
@@ -247,8 +263,11 @@ class AudioRecorder:
             return
 
         chunk = indata.copy()
+        self._write_pcm("system", chunk)
         with self._sys_lock:
             self._sys_frames.append(chunk)
+            if self._pcm_files and len(self._sys_frames) > _PREVIEW_MAX_BLOCKS:
+                del self._sys_frames[:-_PREVIEW_MAX_BLOCKS]
 
     # ------------------------------------------------------------------
     # Parec fallback
@@ -315,9 +334,12 @@ class AudioRecorder:
                 audio_data = np.array(samples, dtype=np.float32) / 32768.0
 
                 if self._source == "dual":
+                    self._write_pcm("system", audio_data)
                     # Store in system frames for dual mode
                     with self._sys_lock:
                         self._sys_frames.append(audio_data.astype(np.float32))
+                        if self._pcm_files and len(self._sys_frames) > _PREVIEW_MAX_BLOCKS:
+                            del self._sys_frames[:-_PREVIEW_MAX_BLOCKS]
                 else:
                     # Compute RMS for VU meter
                     rms = float(np.sqrt(np.mean(audio_data**2)))
@@ -325,9 +347,12 @@ class AudioRecorder:
                     if self._on_rms_update:
                         self._on_rms_update(self._current_rms)
 
-                    # Store frame
+                    # Persist before retaining the preview buffer in memory.
+                    self._write_pcm("single", audio_data)
                     with self._lock:
                         self._frames.append(audio_data.astype(np.float32))
+                        if self._pcm_files and len(self._frames) > _PREVIEW_MAX_BLOCKS:
+                            del self._frames[:-_PREVIEW_MAX_BLOCKS]
 
         except Exception:
             pass
@@ -450,6 +475,12 @@ class AudioRecorder:
             with self._lock:
                 self._frames = []
 
+        self._close_pcm()
+        # User explicitly discarded: remove progressive recovery files too.
+        for path in self._pcm_paths.values():
+            path.unlink(missing_ok=True)
+        self._pcm_paths = {}
+
         # Reset meter to silence
         self._current_rms = 0.0
         if self._on_rms_update:
@@ -522,7 +553,25 @@ class AudioRecorder:
         if self._on_rms_update:
             self._on_rms_update(0.0)
 
-        # --- Build audio_data ---
+        # Finalize progressive crash-safe sinks first. This is the authoritative
+        # audio; RAM frames remain only for compatibility/streaming preview.
+        if self._pcm_paths:
+            self._close_pcm()
+            output_dir = save_dir or self._capture_dir or Path(tempfile.gettempdir())
+            output_dir.mkdir(parents=True, exist_ok=True)
+            results: dict[str, Path] = {}
+            for name, pcm_path in self._pcm_paths.items():
+                wav_path = output_dir / f"session_{self._capture_id}_{name}.wav"
+                if not self.pcm_part_to_wav(pcm_path, wav_path):
+                    raise RuntimeError(f"AudioRecorder: failed to finalize {name} audio")
+                pcm_path.unlink(missing_ok=True)
+                results[name] = wav_path
+            self._pcm_paths = {}
+            if self._source == "dual":
+                return results["mic"], results["system"]
+            return results["single"]
+
+        # Legacy in-memory finalization (callers that did not request durable capture).
         if self._source == "dual":
             with self._mic_lock:
                 mic_frames = list(self._mic_frames)
@@ -619,6 +668,93 @@ class AudioRecorder:
         return mic_audio, sys_audio
 
     # ------------------------------------------------------------------
+    # Durable capture (progressive PCM sink)
+    # ------------------------------------------------------------------
+
+    def _open_durable_capture(self, capture_dir: Path) -> None:
+        """Open .pcm.part files so audio survives a crash mid-recording."""
+        self._capture_dir = capture_dir
+        self._capture_id = uuid.uuid4().hex[:12]
+        capture_dir.mkdir(parents=True, exist_ok=True)
+        suffix = "mic" if self._source == "dual" else "single"
+        names = ["mic", "system"] if self._source == "dual" else ["single"]
+        for name in names:
+            path = capture_dir / f"{self._capture_id}_{name}.pcm.part"
+            self._pcm_files[name] = open(path, "wb", buffering=1024 * 1024)
+            self._pcm_paths[name] = path
+
+    def _write_pcm(self, name: str, chunk: np.ndarray) -> None:
+        """Append a float32 block to the capture sink. Best-effort per block."""
+        f = self._pcm_files.get(name)
+        if f is None:
+            return
+        try:
+            f.write(chunk.astype(np.float32, copy=False).tobytes())
+        except Exception:
+            # A failing sink must never kill the audio callback thread.
+            pass
+
+    def _flush_pcm(self, fsync: bool = True) -> None:
+        for f in self._pcm_files.values():
+            try:
+                f.flush()
+                if fsync:
+                    os.fsync(f.fileno())
+            except Exception:
+                pass
+
+    def _close_pcm(self) -> None:
+        self._flush_pcm()
+        for f in self._pcm_files.values():
+            try:
+                f.close()
+            except Exception:
+                pass
+        self._pcm_files = {}
+
+    @staticmethod
+    def pcm_part_to_wav(pcm_path: Path, wav_path: Path) -> bool:
+        """Convert a float32 raw PCM .part into a playable WAV. Returns success."""
+        import numpy as _np
+
+        try:
+            samples = _np.fromfile(str(pcm_path), dtype=_np.float32)
+            if samples.size == 0:
+                return False
+            # Drop a torn tail block (< 1 full sample is impossible; parity is fine).
+            sf.write(str(wav_path), samples, _SAMPLE_RATE)
+            return True
+        except Exception:
+            return False
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    @property
+    def capture_paths(self) -> dict[str, Path]:
+        """Paths of the progressive PCM sinks for the active capture."""
+        return dict(self._pcm_paths)
+
+    def recover_pcm_parts(pending_dir: Path, logger=None) -> list[Path]:
+        """Convert orphaned .pcm.part files into playable WAVs (crash recovery)."""
+        recovered: list[Path] = []
+        for part in sorted(pending_dir.glob("*.pcm.part")):
+            stem = part.name[: -len(".pcm.part")]
+            wav = pending_dir / f"{stem}.wav"
+            if wav.exists():
+                part.unlink(missing_ok=True)
+                continue
+            if AudioRecorder.pcm_part_to_wav(part, wav):
+                part.unlink(missing_ok=True)
+                recovered.append(wav)
+                if logger:
+                    logger("Recovered audio from crash: %s", wav.name)
+            elif part.stat().st_size < 16000 * 4:  # < 1s of audio — discardable
+                part.unlink(missing_ok=True)
+        return recovered
+
+    # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
 
@@ -634,9 +770,12 @@ class AudioRecorder:
             return
 
         chunk = indata.copy()
+        self._write_pcm("single", chunk)
 
         with self._lock:
             self._frames.append(chunk)
+            if self._pcm_files and len(self._frames) > _PREVIEW_MAX_BLOCKS:
+                del self._frames[:-_PREVIEW_MAX_BLOCKS]
 
         # Compute RMS and normalize to [0.0, 1.0]
         rms = float(np.sqrt(np.mean(chunk**2)))

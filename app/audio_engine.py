@@ -109,7 +109,8 @@ def _start(
     _dual_mode = mode == "dual"
     _recorder = AudioRecorder(on_rms_update=_on_rms)
     try:
-        _recorder.start_recording(source=mode)
+        recordings_dir = VAULT_PATH / "recordings" / "pending"
+        _recorder.start_recording(source=mode, capture_dir=recordings_dir)
         _active = True
         status = {"type": "status", "recording": True, "mode": mode, "dual": _dual_mode}
         
@@ -262,6 +263,13 @@ def _handle_command(cmd: dict) -> None:
 
 def main() -> None:
     global _recorder
+    pending_dir = VAULT_PATH / "recordings" / "pending"
+    recovered = AudioRecorder.recover_pcm_parts(
+        pending_dir,
+        logger=lambda message, name: sys.stderr.write(f"[AudioEngine] {message % name}\n"),
+    )
+    if recovered:
+        sys.stderr.flush()
     signal.signal(signal.SIGTERM, lambda *_: (_stop(), sys.exit(0)))
 
     # Bug 1b fix: emit ready signal so main process knows engine is alive
