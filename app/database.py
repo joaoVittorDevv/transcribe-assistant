@@ -329,7 +329,7 @@ def create_transcription_job(
 def update_transcription_job(job_id: str, **fields: object) -> None:
     """Update an allow-listed set of job fields atomically."""
     allowed = {
-        "status", "mode", "client_sid", "provider", "attempts_google", "attempts_groq",
+        "status", "mode", "audio_paths", "client_sid", "provider", "attempts_google", "attempts_groq",
         "next_retry_at", "last_error", "accumulated_text",
     }
     values = {key: value for key, value in fields.items() if key in allowed}

@@ -50,7 +50,9 @@ def worker_env(tmp_path, monkeypatch):
     async def emit(event, payload):
         events.append((event, payload))
 
-    worker = TranscriptionJobWorker(is_online_fn=lambda: True, emit=emit)
+    worker = TranscriptionJobWorker(
+        is_online_fn=lambda: True, emit=emit, vault_root=tmp_path
+    )
     return worker, wav, events
 
 
@@ -85,7 +87,7 @@ def test_success_persists_and_emits(worker_env):
     assert job["accumulated_text"] == "texto final revisado"
     kinds = [e for e, _ in events]
     assert "transcription:done" in kinds
-    assert wav.exists()
+    assert (worker._vault_root / "recordings" / "completed" / wav.name).exists()
 
 
 def test_transient_google_error_schedules_retry(worker_env):
@@ -117,7 +119,7 @@ def test_permanent_google_failure_falls_back_to_groq(worker_env):
     job = db.get_transcription_job(job_id)
     assert job["mode"] == "groq"
     assert job["status"] == "completed"
-    assert wav.exists()
+    assert (worker._vault_root / "recordings" / "completed" / wav.name).exists()
 
 
 def test_cancel_preserves_audio_and_state(worker_env):
@@ -129,4 +131,4 @@ def test_cancel_preserves_audio_and_state(worker_env):
 
     job = db.get_transcription_job(job_id)
     assert job["status"] == "cancelled"
-    assert wav.exists()
+    assert (worker._vault_root / "recordings" / "cancelled" / wav.name).exists()

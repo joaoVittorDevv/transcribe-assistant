@@ -128,6 +128,7 @@ async def start_job_worker() -> None:
     _job_worker = TranscriptionJobWorker(
         is_online_fn=lambda: _net_mon.is_online,
         emit=_emit_job_event,
+        vault_root=VAULT_PATH,
     )
     _job_worker.start()
 

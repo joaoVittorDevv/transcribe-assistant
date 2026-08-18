@@ -14,6 +14,7 @@ Usage:
 """
 
 import os
+import shutil
 import struct
 import subprocess
 import tempfile
@@ -34,6 +35,8 @@ _BLOCK_SIZE = 1024  # Frames per callback — controls RMS update rate
 # Only this much audio stays in RAM for streaming preview. The authoritative
 # recording is the progressive PCM file on disk.
 _PREVIEW_MAX_BLOCKS = (_SAMPLE_RATE * 10) // _BLOCK_SIZE + 1
+# Minimum free space required before a recording may start (~2h of float32 audio).
+_MIN_FREE_DISK_MB = 500
 
 
 class AudioRecorder:
@@ -642,6 +645,14 @@ class AudioRecorder:
         self._capture_dir = capture_dir
         self._capture_id = uuid.uuid4().hex[:12]
         capture_dir.mkdir(parents=True, exist_ok=True)
+
+        # Refuse to start rather than truncate a recording mid-session.
+        free_mb = shutil.disk_usage(capture_dir).free / (1024 * 1024)
+        if free_mb < _MIN_FREE_DISK_MB:
+            raise RuntimeError(
+                f"Espaço em disco insuficiente para gravar: {free_mb:.0f} MB livres "
+                f"(mínimo {_MIN_FREE_DISK_MB} MB)."
+            )
         suffix = "mic" if self._source == "dual" else "single"
         names = ["mic", "system"] if self._source == "dual" else ["single"]
         for name in names:

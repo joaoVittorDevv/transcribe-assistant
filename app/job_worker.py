@@ -19,6 +19,12 @@ from app import transcriber
 
 logger = logging.getLogger("app.job_worker")
 
+# Retention: completed audio is kept for RETENTION_COMPLETED_DAYS, cancelled
+# audio for RETENTION_CANCELLED_HOURS. pending/failed are NEVER auto-deleted.
+RETENTION_COMPLETED_DAYS = 7
+RETENTION_CANCELLED_HOURS = 24
+MIN_FREE_DISK_MB = 500
+
 # Attempt budgets and backoff per provider (phase 4 will tune these).
 MAX_ATTEMPTS_GOOGLE = 3
 MAX_ATTEMPTS_GROQ = 2
@@ -29,21 +35,68 @@ BACKOFF_GROQ = [15]
 class TranscriptionJobWorker:
     """Sequential job processor. One job at a time, state in SQLite."""
 
-    def __init__(self, is_online_fn: Callable[[], bool], emit: Callable[..., object]):
+    def __init__(self, is_online_fn: Callable[[], bool], emit: Callable[..., object], vault_root: Path):
         self._is_online = is_online_fn
         self._emit = emit  # async emit(event, payload) — best-effort UI push
+        self._vault_root = vault_root
         self._task: asyncio.Task | None = None
         self._wake = asyncio.Event()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._cancelled: set[str] = set()
 
-    # -- lifecycle ----------------------------------------------------------
+    # -- retention ----------------------------------------------------------
+
+    def run_retention_sweep(self) -> None:
+        """Delete only expired completed/cancelled audio. pending & failed stay."""
+        import shutil
+        import time as _time
+
+        now = _time.time()
+        completed_cutoff = now - RETENTION_COMPLETED_DAYS * 86400
+        cancelled_cutoff = now - RETENTION_CANCELLED_HOURS * 3600
+        for sub, cutoff in (("completed", completed_cutoff), ("cancelled", cancelled_cutoff)):
+            folder = self._vault_root / "recordings" / sub
+            if not folder.exists():
+                continue
+            for wav in folder.iterdir():
+                try:
+                    if wav.is_file() and wav.stat().st_mtime < cutoff:
+                        wav.unlink()
+                except OSError as exc:
+                    logger.warning("[Retention] could not remove %s: %s", wav, exc)
+        _ = shutil  # noqa: F401 — reserved for future move helpers
+
+    def _locate_audio(self, path: Path) -> Path:
+        """Find a recording that retention may have moved between lifecycle dirs."""
+        if path.exists():
+            return path
+        for sub in ("pending", "completed", "failed", "cancelled"):
+            candidate = self._vault_root / "recordings" / sub / path.name
+            if candidate.exists():
+                return candidate
+        return path
+
+    def _relocate_audio(self, job: object, destination: str) -> None:
+        """Move a finished job's audio to its lifecycle folder (best-effort)."""
+        import json as _json
+        import shutil
+
+        target_dir = self._vault_root / "recordings" / destination
+        target_dir.mkdir(parents=True, exist_ok=True)
+        for raw in _json.loads(job["audio_paths"]):
+            src = Path(raw)
+            if src.exists():
+                try:
+                    shutil.move(str(src), str(target_dir / src.name))
+                except OSError as exc:
+                    logger.warning("[Worker] could not move %s to %s: %s", src, destination, exc)
 
     def start(self) -> None:
         recovered = db.get_recoverable_transcription_jobs()
         if recovered:
             logger.info("[Worker] Recovering %d unfinished job(s)", len(recovered))
         self._loop = asyncio.get_running_loop()
+        self.run_retention_sweep()
         self._task = asyncio.create_task(self._run(), name="transcription-job-worker")
 
     async def stop(self) -> None:
@@ -100,6 +153,12 @@ class TranscriptionJobWorker:
         keywords = _json.loads(job["keywords"])
         mode = job["mode"]
         source = job["source"]
+
+        # Audio may have been relocated by retention lifecycle since queueing.
+        audio_paths = [self._locate_audio(p) for p in audio_paths]
+        resolved = [str(p) for p in audio_paths]
+        if resolved != _json.loads(job["audio_paths"]):
+            db.update_transcription_job(job_id, audio_paths=_json.dumps(resolved))
 
         # A job whose audio vanished can never succeed — permanent failure.
         missing = [p for p in audio_paths if not p.exists()]
@@ -186,6 +245,7 @@ class TranscriptionJobWorker:
             self._cancelled.discard(job_id)
             fut.cancel()
             db.update_transcription_job(job_id, status="cancelled")
+            self._relocate_audio(job, "cancelled")
             await self._emit(
                 "transcription:status",
                 {"phase": "cancelled", "sessionId": job_id, "message": "Cancelado."},
@@ -208,6 +268,7 @@ class TranscriptionJobWorker:
             last_error=None,
             next_retry_at=None,
         )
+        self._relocate_audio(job, "completed")
         await self._emit(
             "transcription:status",
             {"phase": "done", "sessionId": job_id, "message": "Transcrição concluída!"},
@@ -263,6 +324,10 @@ class TranscriptionJobWorker:
             status=status,
             last_error=str(exc)[:500],
         )
+        # failed_retryable keeps audio in pending/ for an imminent automatic or
+        # manual retry. Only permanently unfixable jobs move aside.
+        if status == "failed_permanent":
+            self._relocate_audio(job, "failed")
         message = (
             "Google/Groq não responderam. O áudio foi preservado e você pode tentar novamente."
             if retryable

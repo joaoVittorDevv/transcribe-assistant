@@ -126,9 +126,6 @@ test-httpx2:
 test-genai:
 	uv run python scripts/connectivity_tests/test_genai.py
 
-# Teste de fluxo de Streaming ASR (requer o servidor rodando localmente)
-test-streaming:
-	uv run python scripts/connectivity_tests/test_streaming_websocket.py
 
 # Rodar todos os testes de rede/conexões em sequência
 test-network: test-ssl test-httpx test-httpx-post test-httpx2
