@@ -7,8 +7,18 @@ export interface AudioStatus {
   error?: string;
 }
 
+export interface AudioCommand {
+  action: 'start' | 'stop' | 'cancel';
+  mode?: 'mic' | 'system' | 'dual';
+  isStreaming?: boolean;
+  sessionId?: string;
+  socketId?: string;
+  prompt?: string;
+  keywords?: string;
+}
+
 export interface ElectronAPI {
-  audioCommand(cmd: { action: string; mode?: string }): Promise<boolean>;
+  audioCommand(cmd: AudioCommand): Promise<boolean>;
   onRmsUpdate(callback: (value: number) => void): () => void;
   onAudioStatus(callback: (status: AudioStatus) => void): () => void;
   openFilePicker(accept: string[]): Promise<string | null>;

@@ -6,6 +6,7 @@ interface EditorAPI {
   undo: () => void;
   insertTextWithAck: (text: string, tabId?: string) => Promise<void>;
   resetInsertionPoint: () => void;
+  replaceTranscriptionText: (text: string) => Promise<void>;
 }
 
 const editorRef = ref<EditorAPI | null>(null);
@@ -37,5 +38,11 @@ export function useEditor() {
     editorRef.value?.resetInsertionPoint();
   }
 
-  return { editorRef, registerEditor, clearEditor, getMarkdown, undo, insertTextWithAck, resetInsertionPoint };
+  async function replaceTranscriptionText(text: string): Promise<void> {
+    if (editorRef.value?.replaceTranscriptionText) {
+      await editorRef.value.replaceTranscriptionText(text);
+    }
+  }
+
+  return { editorRef, registerEditor, clearEditor, getMarkdown, undo, insertTextWithAck, resetInsertionPoint, replaceTranscriptionText };
 }

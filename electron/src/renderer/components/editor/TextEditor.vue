@@ -43,6 +43,9 @@ const api = window.electronAPI as ElectronAPI;
 const activeFormats = reactive<Set<string>>(new Set());
 
 let transcriptionInsertIndex: number | null = null;
+// Start of the text this transcription session has written, so the final
+// authoritative snapshot can replace it without duplicating or eating user text.
+let transcriptionRangeStart: number | null = null;
 // Tracks insertion point during transcription streaming.
 // Captured as a ProseMirror position index.
 
@@ -198,6 +201,7 @@ async function insertTextWithAck(text: string, tabId?: string): Promise<void> {
   if (transcriptionInsertIndex === null) {
     const { selection } = ed.state;
     transcriptionInsertIndex = selection ? selection.anchor : ed.state.doc.content.size;
+    transcriptionRangeStart = transcriptionInsertIndex;
   }
 
   const maxPos = ed.state.doc.content.size;
@@ -229,11 +233,37 @@ async function insertTextWithAck(text: string, tabId?: string): Promise<void> {
 
 function resetInsertionPoint() {
   transcriptionInsertIndex = null;
+  transcriptionRangeStart = null;
+}
+
+/**
+ * Replace only the text written by this transcription session with the server's
+ * persisted snapshot. Text the user typed outside that range is never touched.
+ */
+async function replaceTranscriptionText(text: string): Promise<void> {
+  const ed = editor.value;
+  if (!ed) return;
+
+  if (transcriptionRangeStart === null || transcriptionInsertIndex === null) {
+    await insertTextWithAck(text);
+    return;
+  }
+
+  const from = Math.min(transcriptionRangeStart, ed.state.doc.content.size);
+  const to = Math.min(transcriptionInsertIndex, ed.state.doc.content.size);
+  const oldSize = ed.state.doc.content.size;
+
+  ed.chain().deleteRange({ from, to }).insertContentAt(from, text).run();
+
+  transcriptionInsertIndex = from + (ed.state.doc.content.size - oldSize) + (to - from);
+  ed.commands.setTextSelection(transcriptionInsertIndex);
+  ed.commands.scrollIntoView();
+  await nextTick();
 }
 
 onMounted(() => {
   // Register editor API (clear + markdown export + undo + ack-based insert)
-  registerEditor({ clearEditor, getMarkdown, undo: undoEditor, insertTextWithAck, resetInsertionPoint });
+  registerEditor({ clearEditor, getMarkdown, undo: undoEditor, insertTextWithAck, resetInsertionPoint, replaceTranscriptionText });
 
   // Keyboard shortcut listener
   document.addEventListener('keydown', onEditorKeydown);
@@ -360,7 +390,7 @@ function getMarkdown() {
   return md;
 }
 
-defineExpose({ clearEditor, getMarkdown, undo: undoEditor, insertTextWithAck, resetInsertionPoint });
+defineExpose({ clearEditor, getMarkdown, undo: undoEditor, insertTextWithAck, resetInsertionPoint, replaceTranscriptionText });
 </script>
 
 <style>

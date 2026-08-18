@@ -4,6 +4,7 @@ import { useDefaultPrompt } from './useDefaultPrompt';
 import { useProvider } from './useProvider';
 import { useTranscriptionProgress, PROGRESS_STEPS, type ProgressPhase } from './useTranscriptionProgress';
 import type { ElectronAPI } from '../types/global';
+import type { TranscriptionJobState } from '../types/socket';
 import { useSocket } from './useSocket';
 import { useEditor } from './useEditor';
 import { useStreamingTranscription } from './useStreamingTranscription';
@@ -32,6 +33,9 @@ const sessionId = ref<string | null>(null);
 let wavGenerationTimedOut = false;
 // Interval ID for WAV polling — cleared on cancel to prevent stale triggers
 let wavCheckInterval: ReturnType<typeof setInterval> | null = null;
+// Job watchdog: polls the durable job so a silent server can never strand the UI.
+let jobPollInterval: ReturnType<typeof setInterval> | null = null;
+let jobPollFailures = 0;
 
 // ---------------------------------------------------------------------------
 export function useTranscriptionState() {
@@ -64,24 +68,20 @@ export function useTranscriptionState() {
   function initSocketListeners() {
     if (socketListenersInitialized) return;
     const { socket } = useSocket();
-    const { insertTextWithAck, resetInsertionPoint } = useEditor();
+    const { insertTextWithAck, replaceTranscriptionText } = useEditor();
     const { setPhase, reset: resetProgress } = useTranscriptionProgress();
 
     if (!socket.value) return;
 
-    socket.value.on('transcription:chunk', async (payload, callback) => {
-      if (payload.sessionId !== sessionId.value) {
-        callback({ status: 'ignored' });
-        return;
-      }
+    socket.value.on('transcription:chunk', async (payload) => {
+      if (payload.sessionId !== sessionId.value) return;
       try {
         const { activeTabId } = useTabs();
         await insertTextWithAck(payload.text, activeTabId.value);
-        callback({ status: 'ok' });
       } catch (e) {
+        // Delivery errors never fail the durable server job. Reconciliation below
+        // replaces the editor from the persisted snapshot after reconnect.
         console.error('[Socket.IO] Error inserting text:', e);
-        // Do not ack or maybe ack with error to trigger retry? We'll ack to keep it flowing.
-        callback({ status: 'error' });
       }
     });
 
@@ -107,8 +107,13 @@ export function useTranscriptionState() {
       api.updateAudioState('error');
     });
 
-    socket.value.on('transcription:done', (payload) => {
+    socket.value.on('transcription:done', async (payload) => {
       if (payload.sessionId !== sessionId.value) return;
+      // The worker persisted this text before emitting. Replace only what this
+      // session wrote, so a dropped chunk cannot leave partial text behind.
+      if (payload.text) {
+        await replaceTranscriptionText(payload.text);
+      }
       setPhase('done');
       setTimeout(() => {
         resetProgress();
@@ -118,7 +123,74 @@ export function useTranscriptionState() {
       }, 2000);
     });
 
+    // Socket.IO is notification only. After reconnect, fetch the persisted
+    // snapshot so missed status/result events cannot strand the UI.
+    socket.value.on('connect', () => {
+      if (sessionId.value) reconcileJob(sessionId.value);
+    });
+
     socketListenersInitialized = true;
+  }
+
+  async function reconcileJob(jobId: string) {
+    try {
+      const response = await fetch(`http://localhost:18763/jobs/${jobId}`);
+      if (!response.ok) {
+        jobPollFailures += 1;
+        _maybeFailWatchdog();
+        return;
+      }
+      jobPollFailures = 0;
+      const job = await response.json() as TranscriptionJobState;
+      const { setPhase, reset: resetProgress } = useTranscriptionProgress();
+      if (job.status === 'completed') {
+        stopJobPolling();
+        if (job.text) await useEditor().replaceTranscriptionText(job.text);
+        setPhase('done');
+        setTimeout(() => {
+          resetProgress();
+          state.value = 'IDLE';
+          sessionId.value = null;
+        }, 2000);
+      } else if (job.status.startsWith('failed')) {
+        setPhase('error', `${job.lastError || 'Falha na transcrição'} O áudio foi preservado.`);
+        state.value = 'IDLE';
+      } else if (job.status === 'cancelled') {
+        resetProgress();
+        state.value = 'IDLE';
+      }
+    } catch (error) {
+      jobPollFailures += 1;
+      _maybeFailWatchdog();
+      console.warn('[Transcription] Job reconciliation unavailable:', error);
+    }
+  }
+
+  function _maybeFailWatchdog() {
+    // 3 consecutive unreachable polls (~30s) — surface failure; audio stays safe
+    // on the server and the user can retry from the failed state.
+    if (jobPollFailures >= 3 && state.value === 'TRANSCRIBING') {
+      const { setPhase } = useTranscriptionProgress();
+      setPhase('error', 'Servidor de transcrição inacessível. O áudio foi preservado.');
+      state.value = 'IDLE';
+      stopJobPolling();
+    }
+  }
+
+  function startJobPolling() {
+    stopJobPolling();
+    jobPollFailures = 0;
+    jobPollInterval = setInterval(() => {
+      if (state.value === 'TRANSCRIBING' && sessionId.value) {
+        reconcileJob(sessionId.value);
+      } else {
+        stopJobPolling();
+      }
+    }, 10000);
+  }
+
+  function stopJobPolling() {
+    if (jobPollInterval) { clearInterval(jobPollInterval); jobPollInterval = null; }
   }
 
   // NOVO: Transcrição dual — envia dois arquivos separadamente
@@ -166,6 +238,7 @@ export function useTranscriptionState() {
 
       const resData = await response.json();
       sessionId.value = resData.sessionId;
+      startJobPolling();
 
       // Keep source recordings in Vault. They are the durable recovery copy if
       // the provider, server, or UI fails after accepting the request.
@@ -251,6 +324,7 @@ export function useTranscriptionState() {
 
       const resData = await response.json();
       sessionId.value = resData.sessionId;
+      startJobPolling();
 
       // Keep the source recording in Vault until retention cleanup explicitly
       // removes it. HTTP acceptance does not mean transcription succeeded.
@@ -540,7 +614,7 @@ export function useTranscriptionState() {
       const { socket } = useSocket();
       initSocketListeners();
 
-      const response = await fetch('http://localhost:18763/transcribe', {
+      const response = await fetch('http://localhost:18763/transcribe/import', {
         method: 'POST',
         body: formData,
         signal: abortController.signal,
@@ -554,6 +628,7 @@ export function useTranscriptionState() {
 
       const resData = await response.json();
       sessionId.value = resData.sessionId;
+      startJobPolling();
 
     } catch (err: any) {
       if (err?.name === 'AbortError') {

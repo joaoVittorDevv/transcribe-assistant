@@ -443,6 +443,43 @@ def _validate_recording_paths(paths: list[str]) -> list[Path]:
     return resolved
 
 
+@app.post("/transcribe/import")
+async def transcribe_import(
+    audio: UploadFile = File(...),
+    prompt_text: Annotated[str, Form()] = "",
+    keywords: Annotated[str, Form()] = "",
+    mode: Annotated[str, Form()] = "gemini",
+    source: Annotated[str, Form()] = "import",
+    x_socket_id: str | None = Header(None, alias="X-Socket-ID"),
+):
+    """Copy an imported file into durable Vault storage, then queue it."""
+    pending = VAULT_PATH / "recordings" / "pending"
+    pending.mkdir(parents=True, exist_ok=True)
+    suffix = Path(audio.filename or "audio.wav").suffix or ".wav"
+    path = pending / f"import_{uuid.uuid4().hex[:12]}{suffix}"
+    size = 0
+    try:
+        with open(path, "xb") as target:
+            while chunk := await audio.read(1024 * 1024):
+                size += len(chunk)
+                if size > 500 * 1024 * 1024:
+                    raise HTTPException(status_code=413, detail="Arquivo maior que 500 MB")
+                target.write(chunk)
+            target.flush()
+            os.fsync(target.fileno())
+        if size == 0:
+            raise HTTPException(status_code=400, detail="Arquivo vazio")
+        body = TranscribeJobRequest(
+            audio_paths=[str(path)], prompt_text=prompt_text, keywords=keywords,
+            mode=mode, source=source, socket_id=x_socket_id or "",
+        )
+        return await transcribe(body)
+    except Exception:
+        if size == 0:
+            path.unlink(missing_ok=True)
+        raise
+
+
 @app.post("/transcribe")
 async def transcribe(body: TranscribeJobRequest):
     """POST /transcribe — Queue a durable transcription job for local audio files."""
