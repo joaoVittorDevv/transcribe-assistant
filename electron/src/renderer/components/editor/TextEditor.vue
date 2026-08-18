@@ -31,6 +31,7 @@ import EditorToolbar from './EditorToolbar.vue';
 import FindReplaceBar from './FindReplaceBar.vue';
 import { useTabs } from '../../composables/useTabs';
 import { useEditor as useEditorComposable } from '../../composables/useEditor';
+import { useStreamingTranscription } from '../../composables/useStreamingTranscription';
 import type { ElectronAPI } from '../../types/global';
 
 const findBarRef = ref<InstanceType<typeof FindReplaceBar> | null>(null);
@@ -236,6 +237,58 @@ onMounted(() => {
 
   // Keyboard shortcut listener
   document.addEventListener('keydown', onEditorKeydown);
+
+  // Streaming ASR listener integration
+  const { onInterim, onFinal } = useStreamingTranscription();
+  let streamingStartIndex: number | null = null;
+
+  onInterim((text: string) => {
+    const ed = editor.value;
+    if (!ed) return;
+
+    if (streamingStartIndex === null) {
+      if (!text) return;
+      const { selection } = ed.state;
+      streamingStartIndex = selection ? selection.anchor : ed.state.doc.content.size;
+    }
+
+    const maxPos = ed.state.doc.content.size;
+    if (!text) {
+      // Clear provisional text and reset
+      ed.chain().deleteRange({ from: streamingStartIndex, to: maxPos }).run();
+      streamingStartIndex = null;
+      return;
+    }
+
+    ed.chain()
+      .deleteRange({ from: streamingStartIndex, to: maxPos })
+      .insertContentAt(streamingStartIndex, text)
+      .setTextSelection({ from: streamingStartIndex, to: streamingStartIndex + text.length })
+      .setItalic() // Apply italic formatting for provisional text visual styling
+      .setTextSelection(streamingStartIndex + text.length)
+      .scrollIntoView()
+      .run();
+  });
+
+  onFinal((text: string) => {
+    const ed = editor.value;
+    if (!ed) return;
+
+    if (streamingStartIndex !== null) {
+      const maxPos = ed.state.doc.content.size;
+      ed.chain()
+        .deleteRange({ from: streamingStartIndex, to: maxPos })
+        .insertContentAt(streamingStartIndex, text) // Insert consolidated text without formatting
+        .setTextSelection(streamingStartIndex + text.length)
+        .scrollIntoView()
+        .run();
+
+      transcriptionInsertIndex = streamingStartIndex + text.length;
+      streamingStartIndex = null;
+    } else {
+      insertTextWithAck(text);
+    }
+  });
 });
 
 onUnmounted(() => {
@@ -330,6 +383,12 @@ defineExpose({ clearEditor, getMarkdown, undo: undoEditor, insertTextWithAck, re
   float: left;
   height: 0;
   font-style: normal;
+}
+
+/* Custom styling for provisional streaming text */
+.ProseMirror em {
+  color: #9CA3AF !important;
+  font-style: italic !important;
 }
 
 /* Premium styling for raw blockquotes */

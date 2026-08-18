@@ -584,6 +584,40 @@ class AudioRecorder:
             sf.write(str(wav_path), audio_data, _SAMPLE_RATE)
             return wav_path
 
+    def get_recent_frames(self, duration_sec: float = 3.0) -> np.ndarray:
+        """Return the most recent audio frames corresponding to the given duration in seconds.
+        
+        Used by the streaming transcription pipeline for sliding-window capture.
+        """
+        num_samples = int(_SAMPLE_RATE * duration_sec)
+        with self._lock:
+            if not self._frames:
+                return np.array([], dtype=np.float32)
+            audio = np.concatenate(self._frames, axis=0)
+            if len(audio) == 0:
+                return np.array([], dtype=np.float32)
+            if len(audio) > num_samples:
+                return audio[-num_samples:]
+            return audio
+
+    def get_recent_dual_frames(self, duration_sec: float = 3.0) -> tuple[np.ndarray, np.ndarray]:
+        """Return the most recent audio frames for both mic and system audio in dual mode.
+        
+        Used by the streaming transcription pipeline for sliding-window capture.
+        """
+        num_samples = int(_SAMPLE_RATE * duration_sec)
+        with self._mic_lock:
+            mic_audio = np.concatenate(self._mic_frames, axis=0) if self._mic_frames else np.array([])
+        with self._sys_lock:
+            sys_audio = np.concatenate(self._sys_frames, axis=0) if self._sys_frames else np.array([])
+
+        if len(mic_audio) > num_samples:
+            mic_audio = mic_audio[-num_samples:]
+        if len(sys_audio) > num_samples:
+            sys_audio = sys_audio[-num_samples:]
+
+        return mic_audio, sys_audio
+
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------

@@ -14,7 +14,7 @@ import uuid
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import socketio
@@ -782,6 +782,153 @@ async def fetch_models(body: FetchModelsRequest):
         gemini_models=gemini_list,
         groq_models=groq_list
     )
+
+
+# ---------------------------------------------------------------------------
+# Streaming ASR (Socket.IO & REST Chunking)
+# ---------------------------------------------------------------------------
+from app.agents import StreamAlignmentAgent
+
+# In-memory registry for active streaming sessions
+_streaming_sessions: dict[str, dict] = {}
+_streaming_sessions_lock = threading.Lock()
+
+@sio.on('transcription:stream:cancel')
+async def on_stream_cancel(sid, data):
+    session_id = data.get('sessionId')
+    if session_id:
+        with _streaming_sessions_lock:
+            if session_id in _streaming_sessions:
+                _streaming_sessions[session_id]["status"] = "cancelled"
+                logger.info("[Socket.IO] Streaming session cancelled: %s", session_id)
+
+
+@app.post("/transcribe/stream/{session_id}/chunk")
+async def receive_stream_chunk(
+    session_id: str,
+    request: Request,
+    prompt_text: str = "",
+    keywords: str = "",
+    socket_id: str = "",
+):
+    """POST /transcribe/stream/{session_id}/chunk — Accepts audio chunk upload, transcribes, aligns, and streams back to client via Socket.IO."""
+    # Register the session dynamically if it's the first chunk
+    with _streaming_sessions_lock:
+        if session_id not in _streaming_sessions:
+            _streaming_sessions[session_id] = {
+                "consolidated_text": "",
+                "last_raw_whisper": "",
+                "agent": StreamAlignmentAgent(),
+                "status": "active"
+            }
+        session = _streaming_sessions[session_id]
+        if session["status"] == "cancelled":
+            return {"status": "cancelled"}
+
+    # Read raw bytes from the request body (WAV file)
+    chunk_bytes = await request.body()
+    if not chunk_bytes:
+        raise HTTPException(status_code=400, detail="Empty audio chunk")
+
+    # Run the transcription and alignment in a background thread
+    loop = asyncio.get_running_loop()
+
+    def run_whisper_and_align():
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+            tmp.write(chunk_bytes)
+            tmp_path = Path(tmp.name)
+
+        try:
+            t = transcriber.Transcriber(is_online_fn=lambda: _net_mon.is_online)
+            keywords_list = [k.strip() for k in keywords.split(",") if k.strip()] if keywords else []
+            
+            raw_text = t.transcribe_raw_groq(tmp_path, keywords_list)
+            logger.info(f"[Stream ASR] Raw Whisper text: '{raw_text}'")
+            
+            if not raw_text.strip():
+                return None
+
+            agent = session["agent"]
+            history = session["consolidated_text"]
+            
+            aligned_text = agent.align(history, raw_text)
+            logger.info(f"[Stream ASR] Aligned Text: '{aligned_text}'")
+            return aligned_text
+        except Exception as exc:
+            logger.error(f"[Stream ASR] Error in transcription/alignment: {exc}")
+            return None
+        finally:
+            tmp_path.unlink(missing_ok=True)
+
+    aligned = await loop.run_in_executor(None, run_whisper_and_align)
+
+    if aligned is not None:
+        with _streaming_sessions_lock:
+            if session_id in _streaming_sessions:
+                _streaming_sessions[session_id]["consolidated_text"] = aligned
+                
+        # Emit via Socket.IO directly to the client socket ID
+        if socket_id:
+            await sio.emit("transcription:stream:interim", {
+                "text": aligned,
+                "sessionId": session_id
+            }, to=socket_id)
+        
+    return {"status": "processed"}
+
+
+@app.post("/transcribe/stream/{session_id}/done")
+async def receive_stream_done(
+    session_id: str,
+    prompt_text: str = "",
+    keywords: str = "",
+    socket_id: str = "",
+):
+    """POST /transcribe/stream/{session_id}/done — Consolidates the session and returns final clean text."""
+    with _streaming_sessions_lock:
+        if session_id not in _streaming_sessions:
+            raise HTTPException(status_code=404, detail="Streaming session not found or inactive")
+        session = _streaming_sessions[session_id]
+        if session["status"] == "cancelled":
+            return {"status": "cancelled"}
+
+    # Run the final consolidation pass using Llama
+    loop = asyncio.get_running_loop()
+
+    def run_final_consolidation():
+        try:
+            from app.agents import TranscriptionReviewAgent
+            reviewer = TranscriptionReviewAgent()
+            
+            current_text = session["consolidated_text"]
+            if not current_text:
+                return ""
+                
+            keywords_list = [k.strip() for k in keywords.split(",") if k.strip()] if keywords else []
+            review_result = reviewer.review(
+                transcribed_text=current_text,
+                keywords=keywords_list,
+                prompt_text=prompt_text
+            )
+            return review_result.corrected_text
+        except Exception as exc:
+            logger.error(f"[Stream ASR] Error in final consolidation: {exc}")
+            return session["consolidated_text"]
+
+    final_text = await loop.run_in_executor(None, run_final_consolidation)
+    
+    # Emit final consolidated text via Socket.IO
+    if socket_id:
+        await sio.emit("transcription:stream:final", {
+            "text": final_text,
+            "sessionId": session_id
+        }, to=socket_id)
+    
+    # Remove session
+    with _streaming_sessions_lock:
+        _streaming_sessions.pop(session_id, None)
+        
+    return {"status": "finalized", "text": final_text}
 
 
 # Allow `python -m app.server` or `uvicorn app.server:app`

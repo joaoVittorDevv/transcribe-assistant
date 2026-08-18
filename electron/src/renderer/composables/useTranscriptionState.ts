@@ -6,6 +6,7 @@ import { useTranscriptionProgress, PROGRESS_STEPS, type ProgressPhase } from './
 import type { ElectronAPI } from '../types/global';
 import { useSocket } from './useSocket';
 import { useEditor } from './useEditor';
+import { useStreamingTranscription } from './useStreamingTranscription';
 
 export type TranscriptionState = 'IDLE' | 'RECORDING' | 'TRANSCRIBING';
 
@@ -39,6 +40,23 @@ export function useTranscriptionState() {
   const api = window.electronAPI as ElectronAPI;
   const { promptData } = useDefaultPrompt();
   const { selectedProvider } = useProvider();
+  
+  const { isStreamingActive, isRecordingStream, onFinal } = useStreamingTranscription();
+
+  // Watch for changes in streaming state to reset UI state on finish/error
+  watch(isRecordingStream, (recording) => {
+    if (!recording && isStreamingActive.value && state.value !== 'IDLE') {
+      state.value = 'IDLE';
+      elapsedSeconds.value = 0;
+      if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
+    }
+  });
+
+  onFinal(() => {
+    state.value = 'IDLE';
+    elapsedSeconds.value = 0;
+    if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
+  });
 
   // Socket.IO event listeners setup (run once)
   let socketListenersInitialized = false;
@@ -292,7 +310,12 @@ export function useTranscriptionState() {
       }, 5000);
     });
 
-    api.audioCommand({ action: 'start', mode: currentMode });
+    const { isStreamingActive, startStreaming } = useStreamingTranscription();
+    if (isStreamingActive.value) {
+      startStreaming(currentMode);
+    } else {
+      api.audioCommand({ action: 'start', mode: currentMode });
+    }
 
     const started = await recordingStarted;
     if (!started) {
@@ -305,6 +328,15 @@ export function useTranscriptionState() {
   }
 
   async function stopAndTranscribe() {
+    const { isStreamingActive, stopStreaming } = useStreamingTranscription();
+
+    if (isStreamingActive.value) {
+      state.value = 'TRANSCRIBING';
+      if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
+      stopStreaming();
+      return;
+    }
+
     state.value = 'TRANSCRIBING';
     if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
     wavGenerationTimedOut = false;
@@ -376,6 +408,18 @@ export function useTranscriptionState() {
 
   function handleCancel() {
     const { reset: resetProgress } = useTranscriptionProgress();
+    const { isStreamingActive, cancelStreaming } = useStreamingTranscription();
+
+    if (isStreamingActive.value) {
+      if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
+      cancelStreaming();
+      state.value = 'IDLE';
+      elapsedSeconds.value = 0;
+      rmsValue.value = 0;
+      resetProgress();
+      return;
+    }
+
     if (state.value === 'RECORDING') {
       // Cancel recording: discard audio via 'cancel' action (no WAV saved)
       if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }

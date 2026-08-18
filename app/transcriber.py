@@ -507,6 +507,37 @@ class Transcriber:
             on_chunk(result)
         return result
 
+    def transcribe_raw_groq(self, audio_path: Path, keywords: list[str]) -> str:
+        """Transcribe an audio file using Groq Whisper, returning the raw unreviewed text.
+        
+        Used by the streaming transcription pipeline to get quick interim results.
+        """
+        try:
+            from groq import Groq
+        except ImportError as exc:
+            raise TranscriptionError(
+                "groq nao instalado. Execute: uv add groq"
+            ) from exc
+
+        client = Groq(api_key=GROQ_API_KEY)
+        initial_prompt = ", ".join(keywords) if keywords else ""
+
+        try:
+            with open(audio_path, "rb") as file:
+                transcription = client.audio.transcriptions.create(
+                    file=file,
+                    model="whisper-large-v3-turbo",
+                    prompt=initial_prompt,
+                    response_format="text",
+                    language="pt",
+                    temperature=0.0,
+                )
+            return str(transcription).strip()
+        except Exception as exc:
+            raise TranscriptionError(
+                f"Erro na transcricao bruta com Groq: {exc}"
+            ) from exc
+
     def _transcribe_groq_single(
         self,
         audio_path: Path,

@@ -25,6 +25,15 @@
     <!-- Center-left: Visualizer -->
     <AudioVisualizer :is-active="transcriptionState === 'RECORDING'" />
 
+    <!-- Streaming Switch -->
+    <div class="flex items-center gap-2 px-2 border-l border-white/10">
+      <label class="relative inline-flex items-center cursor-pointer select-none">
+        <input type="checkbox" v-model="isStreamingActive" class="sr-only peer" :disabled="transcriptionState !== 'IDLE'">
+        <div class="w-8 h-4 bg-white/10 rounded-full peer peer-focus:ring-0 peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-0.5 after:start-[2px] after:bg-white after:border-white/30 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-accent-blue"></div>
+        <span class="ms-2 text-[10px] font-semibold text-text-primary uppercase tracking-wider">Streaming ASR</span>
+      </label>
+    </div>
+
     <!-- Center: Record button (always centered) -->
     <div class="flex-1 flex items-center justify-center">
       <RecordButton
@@ -65,6 +74,7 @@ import AudioVisualizer from './AudioVisualizer.vue';
 import RecordButton from './RecordButton.vue';
 import TranscriptionProgress from './TranscriptionProgress.vue';
 import { useTranscriptionState } from '../../composables/useTranscriptionState';
+import { useStreamingTranscription } from '../../composables/useStreamingTranscription';
 import { useTabs } from '../../composables/useTabs';
 import { useEditor } from '../../composables/useEditor';
 import { useClipboard } from '../../composables/useClipboard';
@@ -73,6 +83,7 @@ import type { ElectronAPI } from '../../types/global';
 
 const api = window.electronAPI as ElectronAPI;
 const { transcriptionState, elapsedSeconds, isShowingCancel, handleRecordClick, handleCancel, setMode } = useTranscriptionState();
+const { isStreamingActive } = useStreamingTranscription();
 const { resetActiveTab, getActiveTab } = useTabs();
 const { clearEditor, getMarkdown, undo } = useEditor();
 const { copyToClipboard } = useClipboard();
