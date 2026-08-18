@@ -60,8 +60,13 @@ async def on_cancel(sid, data):
 
 logger = logging.getLogger("app.server")
 
-# Shared network monitor — start once at module load so is_online is meaningful
-_net_mon = network_monitor.NetworkMonitor()
+# Shared network monitor — wake the durable queue as soon as connectivity returns.
+def _on_network_change(online: bool) -> None:
+    if online and _job_worker:
+        _job_worker.wake()
+
+
+_net_mon = network_monitor.NetworkMonitor(on_status_change=_on_network_change)
 _net_mon.start()
 
 # Ensure DB schema exists at module load

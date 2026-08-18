@@ -34,6 +34,7 @@ class TranscriptionJobWorker:
         self._emit = emit  # async emit(event, payload) — best-effort UI push
         self._task: asyncio.Task | None = None
         self._wake = asyncio.Event()
+        self._loop: asyncio.AbstractEventLoop | None = None
         self._cancelled: set[str] = set()
 
     # -- lifecycle ----------------------------------------------------------
@@ -42,6 +43,7 @@ class TranscriptionJobWorker:
         recovered = db.get_recoverable_transcription_jobs()
         if recovered:
             logger.info("[Worker] Recovering %d unfinished job(s)", len(recovered))
+        self._loop = asyncio.get_running_loop()
         self._task = asyncio.create_task(self._run(), name="transcription-job-worker")
 
     async def stop(self) -> None:
@@ -54,7 +56,13 @@ class TranscriptionJobWorker:
             self._task = None
 
     def wake(self) -> None:
-        self._wake.set()
+        """Thread-safe wake (network monitor, HTTP handlers, call_later)."""
+        if self._loop is None:
+            return
+        try:
+            self._loop.call_soon_threadsafe(self._wake.set)
+        except RuntimeError:
+            pass  # loop closed during shutdown
 
     def cancel_job(self, job_id: str) -> None:
         self._cancelled.add(job_id)
@@ -288,6 +296,9 @@ class TranscriptionJobWorker:
 
 
 def _is_retryable(exc: Exception) -> bool:
+    explicit = getattr(exc, "retryable", None)
+    if explicit is not None:
+        return bool(explicit)
     text = str(exc).lower()
     transient = (
         "timeout", "deadline", "504", "502", "503", "500", "429", "overloaded",

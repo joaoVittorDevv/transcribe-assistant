@@ -208,8 +208,33 @@ GEMINI_DUAL_AUDIO_INSTRUCTION = (
 )
 
 
+def _is_permanent_http_error(exc: Exception) -> bool:
+    """Conservative provider error classification: unknown network errors retry."""
+    text = str(exc).lower()
+    return any(
+        marker in text
+        for marker in (
+            "400", "401", "403", "404", "invalid argument", "api key",
+            "permission denied", "unauthorized", "forbidden",
+        )
+    )
+
+
 class TranscriptionError(Exception):
-    """Raised when all available transcription backends fail."""
+    """Provider failure with enough metadata for safe retry decisions."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        provider: str | None = None,
+        code: str | None = None,
+        retryable: bool | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.provider = provider
+        self.code = code
+        self.retryable = retryable
 
 
 class Transcriber:
@@ -378,7 +403,10 @@ class Transcriber:
                 except Exception:
                     pass
             raise TranscriptionError(
-                f"Falha ao fazer upload do audio: {exc}"
+                f"Falha ao fazer upload do audio: {exc}",
+                provider="google",
+                code="upload_failed",
+                retryable=True,
             ) from exc
 
         if on_status:
@@ -432,11 +460,18 @@ class Transcriber:
             exc_name = type(exc).__name__
             if exc_name == "DeadlineExceeded" or "504" in str(exc) or "DEADLINE_EXCEEDED" in str(exc):
                 raise TranscriptionError(
-                    "A conexao expirou (504: DEADLINE_EXCEEDED)."
+                    "A conexao expirou (504: DEADLINE_EXCEEDED).",
+                    provider="google",
+                    code="504",
+                    retryable=True,
                 ) from exc
 
+            retryable = not _is_permanent_http_error(exc)
             raise TranscriptionError(
-                f"Erro na requisicao ao Gemini: {exc}"
+                f"Erro na requisicao ao Gemini: {exc}",
+                provider="google",
+                code=type(exc).__name__,
+                retryable=retryable,
             ) from exc
         finally:
             # Best-effort cleanup of all uploaded files
@@ -535,7 +570,10 @@ class Transcriber:
             return str(transcription).strip()
         except Exception as exc:
             raise TranscriptionError(
-                f"Erro na transcricao bruta com Groq: {exc}"
+                f"Erro na transcricao bruta com Groq: {exc}",
+                provider="groq",
+                code=type(exc).__name__,
+                retryable=not _is_permanent_http_error(exc),
             ) from exc
 
     def _transcribe_groq_single(
@@ -559,7 +597,10 @@ class Transcriber:
         print(f"[DEBUG] Groq: tamanho do arquivo: {file_size_mb:.2f} MB")
         if audio_path.stat().st_size > 25 * 1024 * 1024:
             raise TranscriptionError(
-                "Chunk muito grande para a API do Groq (> 25MB)."
+                "Chunk muito grande para a API do Groq (> 25MB).",
+                provider="groq",
+                code="file_too_large",
+                retryable=False,
             )
 
         client = Groq(api_key=GROQ_API_KEY)
@@ -580,7 +621,10 @@ class Transcriber:
             print(f"[DEBUG] Groq: transcricao bruta obtida ({len(raw_text)} chars)")
         except Exception as exc:
             raise TranscriptionError(
-                f"Erro na transcricao com Groq: {exc}"
+                f"Erro na transcricao com Groq: {exc}",
+                provider="groq",
+                code=type(exc).__name__,
+                retryable=not _is_permanent_http_error(exc),
             ) from exc
 
         # --- Review step: grammar / punctuation correction ---
