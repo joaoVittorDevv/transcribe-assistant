@@ -66,6 +66,9 @@ install:
 		echo "   🆕 Nenhum banco anterior encontrado. Um novo banco será gerado na primeira inicialização."; \
 	fi
 	
+	@echo "🤖 Garantindo inicialização e migrações do banco de dados na instalação..."
+	uv run --project $(INSTALL_DIR)/resources python -c "from app import database as db; db.initialize_db()"
+	
 	@echo "🤖 Configurando ícone da aplicação..."
 	mkdir -p $(INSTALL_DIR)/resources/assets
 	cp assets/assist_transcribe_1x1.png $(INSTALL_DIR)/resources/assets/icon.png

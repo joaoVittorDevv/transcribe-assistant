@@ -17,7 +17,7 @@ from typing import Annotated
 
 from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 import socketio
 
 # Default port for the FastAPI server
@@ -33,7 +33,7 @@ from app.job_worker import TranscriptionJobWorker
 # Socket.IO setup
 sio = socketio.AsyncServer(
     async_mode='asgi',
-    cors_allowed_origins=['http://localhost:5173'],
+    cors_allowed_origins='*',
     max_http_buffer_size=1048576,
     ping_timeout=20,
     ping_interval=25,
@@ -392,6 +392,10 @@ class SettingsResponse(PydanticBaseModel):
     groq_key_configured: bool
     groq_key_masked: str
     groq_review_model: str
+    minimax_key_configured: bool
+    minimax_key_masked: str
+    minimax_base_url: str
+    minimax_model: str
     app_language: str
     vault_path: str
     dual_intermediary_path: str
@@ -409,6 +413,9 @@ class SettingsUpdateRequest(PydanticBaseModel):
     gemini_model: str | None = None
     groq_key: str | None = None
     groq_review_model: str | None = None
+    minimax_key: str | None = None
+    minimax_base_url: str | None = None
+    minimax_model: str | None = None
     app_language: str | None = None
     vault_path: str | None = None
     dual_intermediary_path: str | None = None
@@ -424,11 +431,14 @@ class SettingsUpdateRequest(PydanticBaseModel):
 class FetchModelsRequest(PydanticBaseModel):
     gemini_key: str | None = None
     groq_key: str | None = None
+    minimax_key: str | None = None
+    minimax_base_url: str | None = None
 
 
 class FetchModelsResponse(PydanticBaseModel):
     gemini_models: list[str]
     groq_models: list[str]
+    minimax_models: list[str]
 
 
 def _get_masked_key(key: str) -> str:
@@ -451,6 +461,10 @@ async def get_settings():
         groq_key_configured=bool(config.GROQ_API_KEY),
         groq_key_masked=_get_masked_key(config.GROQ_API_KEY),
         groq_review_model=config.GROQ_REVIEW_MODEL,
+        minimax_key_configured=bool(config.MINIMAX_API_KEY),
+        minimax_key_masked=_get_masked_key(config.MINIMAX_API_KEY),
+        minimax_base_url=config.MINIMAX_BASE_URL,
+        minimax_model=config.MINIMAX_MODEL,
         app_language=config.APP_LANGUAGE,
         vault_path=str(config.VAULT_PATH),
         dual_intermediary_path=str(config.DUAL_INTERMEDIARY_PATH),
@@ -502,17 +516,33 @@ async def update_settings(body: SettingsUpdateRequest):
     if body.groq_review_model is not None:
         db.set_setting("GROQ_REVIEW_MODEL", body.groq_review_model.strip())
 
-    # 5. Language
+    # 5. MiniMax Key & Config
+    if body.minimax_key is not None:
+        mmkey = body.minimax_key.strip()
+        if "..." in mmkey or "********" in mmkey or (len(mmkey) > 0 and mmkey.endswith("XXXX")):
+            pass
+        elif mmkey == "":
+            db.set_setting("MINIMAX_API_KEY", "")
+        else:
+            db.set_setting("MINIMAX_API_KEY", sec.encrypt_value(mmkey))
+
+    if body.minimax_base_url is not None:
+        db.set_setting("MINIMAX_BASE_URL", body.minimax_base_url.strip())
+
+    if body.minimax_model is not None:
+        db.set_setting("MINIMAX_MODEL", body.minimax_model.strip())
+
+    # 6. Language
     if body.app_language is not None:
         db.set_setting("APP_LANGUAGE", body.app_language.strip())
 
-    # 6. Paths
+    # 7. Paths
     if body.vault_path is not None:
         db.set_setting("VAULT_PATH", body.vault_path.strip())
     if body.dual_intermediary_path is not None:
         db.set_setting("DUAL_INTERMEDIARY_PATH", body.dual_intermediary_path.strip())
 
-    # 7. Network
+    # 8. Network
     if body.network_ping_host is not None:
         db.set_setting("NETWORK_PING_HOST", body.network_ping_host.strip())
     if body.network_ping_port is not None:
@@ -520,7 +550,7 @@ async def update_settings(body: SettingsUpdateRequest):
     if body.network_check_interval is not None:
         db.set_setting("NETWORK_CHECK_INTERVAL", str(body.network_check_interval))
 
-    # 8. Tray & Alerts
+    # 9. Tray & Alerts
     if body.tray_enabled is not None:
         db.set_setting("TRAY_ENABLED", str(body.tray_enabled))
     if body.persistent_notifications_enabled is not None:
@@ -538,9 +568,9 @@ async def update_settings(body: SettingsUpdateRequest):
 
 @app.post("/settings/models", response_model=FetchModelsResponse)
 async def fetch_models(body: FetchModelsRequest):
-    """POST /settings/models — Dynamically fetch models available for Gemini and Groq."""
+    """POST /settings/models — Dynamically fetch models available for Gemini, Groq and MiniMax."""
     import app.config as config
-    from app.models_fetcher import fetch_gemini_models, fetch_groq_models
+    from app.models_fetcher import fetch_gemini_models, fetch_groq_models, fetch_minimax_models
 
     config.load_all_settings()
 
@@ -562,14 +592,273 @@ async def fetch_models(body: FetchModelsRequest):
     else:
         groq_key = config.GROQ_API_KEY
 
+    # Determine MiniMax Key & Base URL
+    minimax_key = body.minimax_key
+    if minimax_key is not None:
+        minimax_key = minimax_key.strip()
+        if "..." in minimax_key or "********" in minimax_key or minimax_key == "":
+            minimax_key = config.MINIMAX_API_KEY
+    else:
+        minimax_key = config.MINIMAX_API_KEY
+
+    minimax_base_url = body.minimax_base_url or config.MINIMAX_BASE_URL
+
     # Fetch models
     gemini_list = fetch_gemini_models(gemini_key)
     groq_list = fetch_groq_models(groq_key)
+    minimax_list = fetch_minimax_models(minimax_key, base_url=minimax_base_url)
 
     return FetchModelsResponse(
         gemini_models=gemini_list,
-        groq_models=groq_list
+        groq_models=groq_list,
+        minimax_models=minimax_list
     )
+
+
+# ---------------------------------------------------------------------------
+# Rewrite Agents API & Meta-Agent Endpoints
+# ---------------------------------------------------------------------------
+
+class CreateAgentWithAIRequest(PydanticBaseModel):
+    user_intent: str
+    target_provider: str | None = "minimax"
+
+
+class RewriteAgentPayload(PydanticBaseModel):
+    name: str
+    slug: str
+    icon: str = "✨"
+    description: str = ""
+    system_prompt: str
+    tone: str = "balanced"
+    target_audience: str = "general"
+    remove_filler_words: bool = True
+    preserve_slang: bool = False
+    prefix_template: str = ""
+    suffix_template: str = ""
+    output_format: str = "markdown"
+    provider: str = "minimax"
+    model: str = "MiniMax-M2.7-highspeed"
+    temperature: float = 0.3
+    is_default: bool = False
+    agent_type: str = "no-check"
+
+
+class RewriteRequest(PydanticBaseModel):
+    agent_id: int
+    text: str
+
+
+@app.get("/agents")
+async def list_agents():
+    """GET /agents — List all configured rewrite agents."""
+    agents = db.list_rewrite_agents()
+    return [dict(a) for a in agents]
+
+
+@app.get("/agents/{agent_id}")
+async def get_agent(agent_id: int):
+    """GET /agents/{agent_id} — Get single rewrite agent by id."""
+    agent = db.get_rewrite_agent(agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agente não encontrado")
+    return dict(agent)
+
+
+@app.post("/agents")
+async def create_agent(payload: RewriteAgentPayload):
+    """POST /agents — Create a new rewrite agent."""
+    try:
+        new_id = db.create_rewrite_agent(
+            name=payload.name,
+            slug=payload.slug,
+            icon=payload.icon,
+            description=payload.description,
+            system_prompt=payload.system_prompt,
+            tone=payload.tone,
+            target_audience=payload.target_audience,
+            remove_filler_words=payload.remove_filler_words,
+            preserve_slang=payload.preserve_slang,
+            prefix_template=payload.prefix_template,
+            suffix_template=payload.suffix_template,
+            output_format=payload.output_format,
+            provider=payload.provider,
+            model=payload.model,
+            temperature=payload.temperature,
+            is_default=payload.is_default,
+            agent_type=payload.agent_type,
+        )
+        return {"ok": True, "id": new_id, "message": "Agente criado com sucesso"}
+    except sqlite3.IntegrityError:
+        raise HTTPException(status_code=409, detail=f"Já existe um agente com o slug '{payload.slug}'")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put("/agents/{agent_id}")
+async def update_agent(agent_id: int, payload: RewriteAgentPayload):
+    """PUT /agents/{agent_id} — Update an existing rewrite agent."""
+    existing = db.get_rewrite_agent(agent_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Agente não encontrado")
+    db.update_rewrite_agent(agent_id, **payload.model_dump())
+    return {"ok": True, "message": "Agente atualizado com sucesso"}
+
+
+@app.delete("/agents/{agent_id}")
+async def delete_agent(agent_id: int):
+    """DELETE /agents/{agent_id} — Delete a rewrite agent."""
+    existing = db.get_rewrite_agent(agent_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Agente não encontrado")
+    db.delete_rewrite_agent(agent_id)
+    return {"ok": True, "message": "Agente removido com sucesso"}
+
+
+@app.post("/agents/{agent_id}/set-default")
+async def set_default_agent(agent_id: int):
+    """POST /agents/{agent_id}/set-default — Mark agent as default."""
+    existing = db.get_rewrite_agent(agent_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Agente não encontrado")
+    db.set_default_rewrite_agent(agent_id)
+    return {"ok": True, "message": "Agente definido como padrão"}
+
+
+class BuilderStartRequest(PydanticBaseModel):
+    session_id: str
+    model: str | None = None
+    initial_agent: dict | None = None
+
+
+class BuilderChatRequest(PydanticBaseModel):
+    session_id: str
+    message: str
+    model: str | None = None
+
+
+class BuilderResetRequest(PydanticBaseModel):
+    session_id: str
+
+
+class RewriteRequest(PydanticBaseModel):
+    agent_id: int
+    text: str
+    model: str | None = None
+
+
+@app.post("/agents/builder/start")
+async def builder_start_endpoint(body: BuilderStartRequest):
+    """POST /agents/builder/start — Initialize an ephemeral Agno Meta-Architect session."""
+    from app.agents_service import start_builder_session
+    try:
+        data = start_builder_session(
+            session_id=body.session_id,
+            model_name=body.model or "",
+            initial_agent=body.initial_agent,
+        )
+        return {"ok": True, **data}
+    except Exception as e:
+        logger.error("Error starting builder session: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/agents/builder/chat")
+async def builder_chat_endpoint(body: BuilderChatRequest):
+    """POST /agents/builder/chat — Send turn to the conversational Agno Meta-Architect."""
+    from app.agents_service import chat_builder_session
+    try:
+        data = chat_builder_session(
+            session_id=body.session_id,
+            user_message=body.message,
+            model_name=body.model or "",
+        )
+        return {"ok": True, **data}
+    except Exception as e:
+        logger.error("Error in builder chat: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/agents/builder/reset")
+async def builder_reset_endpoint(body: BuilderResetRequest):
+    """POST /agents/builder/reset — Completely purge memory of the builder session."""
+    from app.agents_service import reset_builder_session
+    try:
+        reset_builder_session(session_id=body.session_id)
+        return {"ok": True, "message": "Memória da sessão de construção expurgada com sucesso."}
+    except Exception as e:
+        logger.error("Error resetting builder session: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/agents/rewrite")
+async def rewrite_text_endpoint(body: RewriteRequest):
+    """POST /agents/rewrite — Execute text rewriting using Agno."""
+    from app.agents_service import execute_rewrite_agno
+    try:
+        result = execute_rewrite_agno(
+            agent_id=body.agent_id,
+            text=body.text,
+            model_override=body.model or "",
+        )
+        return {"ok": True, **result}
+    except Exception as e:
+        logger.error("Error executing rewrite: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/agents/rewrite/stream")
+async def rewrite_text_stream_endpoint(body: RewriteRequest):
+    """POST /agents/rewrite/stream — Stream text rewriting and reasoning events via SSE."""
+    from app.agents_service import execute_rewrite_stream_agno
+    import json
+
+    def event_generator():
+        try:
+            for event in execute_rewrite_stream_agno(
+                agent_id=body.agent_id,
+                text=body.text,
+                model_override=body.model or "",
+            ):
+                yield f"data: {json.dumps(event)}\n\n"
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+        except Exception as e:
+            logger.error("Error during rewrite stream: %s", e)
+            yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+class RewriteFeedbackRequest(PydanticBaseModel):
+    agent_id: int
+    original_text: str
+    current_draft: str
+    feedback: str
+    model: str | None = None
+
+
+@app.post("/agents/rewrite/feedback/stream")
+async def rewrite_feedback_stream_endpoint(body: RewriteFeedbackRequest):
+    """POST /agents/rewrite/feedback/stream — Stream iterative refinement on draft via SSE."""
+    from app.agents_service import execute_rewrite_feedback_stream
+    import json
+
+    def event_generator():
+        try:
+            for event in execute_rewrite_feedback_stream(
+                agent_id=body.agent_id,
+                original_text=body.original_text,
+                current_draft=body.current_draft,
+                feedback=body.feedback,
+                model_override=body.model or "",
+            ):
+                yield f"data: {json.dumps(event)}\n\n"
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+        except Exception as e:
+            logger.error("Error during rewrite feedback stream: %s", e)
+            yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
 # Allow `python -m app.server` or `uvicorn app.server:app`
