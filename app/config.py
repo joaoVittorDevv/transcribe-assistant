@@ -37,6 +37,9 @@ GEMINI_TIMEOUT: float = 300.0
 APP_LANGUAGE: str = "pt"
 GROQ_API_KEY: str = ""
 GROQ_REVIEW_MODEL: str = "llama-3.1-8b-instant"
+MINIMAX_API_KEY: str = ""
+MINIMAX_BASE_URL: str = "https://api.minimax.io/v1"
+MINIMAX_MODEL: str = "MiniMax-Text-01"
 WHISPER_MODEL: str = "base"
 WHISPER_DEVICE: str = "cpu"
 WHISPER_COMPUTE_TYPE: str = "int8"
@@ -58,6 +61,7 @@ def load_all_settings() -> None:
     """Load configuration variables from the database, or migrate from .env on first run."""
     global GOOGLE_API_KEY, GEMINI_MODEL, GEMINI_TIMEOUT, APP_LANGUAGE
     global GROQ_API_KEY, GROQ_REVIEW_MODEL, WHISPER_MODEL, WHISPER_DEVICE
+    global MINIMAX_API_KEY, MINIMAX_BASE_URL, MINIMAX_MODEL
     global WHISPER_COMPUTE_TYPE, NETWORK_PING_HOST, NETWORK_PING_PORT
     global NETWORK_CHECK_INTERVAL, VAULT_PATH, DUAL_INTERMEDIARY_PATH
     global TRAY_ENABLED, PERSISTENT_NOTIFICATIONS_ENABLED, ALERT_TRANSCRIPTION_TYPES, ALERT_INTERVAL
@@ -123,6 +127,11 @@ def load_all_settings() -> None:
     enc_groq_db = db.get_setting("GROQ_API_KEY", "")
     GROQ_API_KEY = sec.decrypt_value(enc_groq_db) if enc_groq_db else ""
 
+    enc_minimax_db = db.get_setting("MINIMAX_API_KEY", "")
+    MINIMAX_API_KEY = sec.decrypt_value(enc_minimax_db) if enc_minimax_db else ""
+    MINIMAX_BASE_URL = db.get_setting("MINIMAX_BASE_URL", "https://api.minimax.io/v1")
+    MINIMAX_MODEL = db.get_setting("MINIMAX_MODEL", "MiniMax-Text-01")
+
     GEMINI_MODEL = db.get_setting("GEMINI_MODEL", "gemini-2.0-flash")
     GEMINI_TIMEOUT = float(db.get_setting("GEMINI_TIMEOUT", "300.0"))
     APP_LANGUAGE = db.get_setting("APP_LANGUAGE", "pt")
@@ -155,7 +164,9 @@ def reload_config() -> None:
         if mod_name.startswith("app.") and module and mod_name != "app.config":
             for var_name in [
                 "GOOGLE_API_KEY", "GEMINI_MODEL", "GEMINI_TIMEOUT",
-                "GROQ_API_KEY", "GROQ_REVIEW_MODEL", "APP_LANGUAGE",
+                "GROQ_API_KEY", "GROQ_REVIEW_MODEL",
+                "MINIMAX_API_KEY", "MINIMAX_BASE_URL", "MINIMAX_MODEL",
+                "APP_LANGUAGE",
                 "NETWORK_PING_HOST", "NETWORK_PING_PORT", "NETWORK_CHECK_INTERVAL",
                 "WHISPER_MODEL", "WHISPER_DEVICE", "WHISPER_COMPUTE_TYPE",
                 "VAULT_PATH", "DUAL_INTERMEDIARY_PATH",

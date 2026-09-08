@@ -24,6 +24,18 @@ DEFAULT_GROQ_MODELS = [
     "whisper-large-v3",
 ]
 
+DEFAULT_MINIMAX_MODELS = [
+    "MiniMax-M2.7-highspeed",
+    "MiniMax-M3",
+    "MiniMax-M2.7",
+    "MiniMax-M2.5",
+    "MiniMax-Text-01",
+    "MiniMax-VL-01",
+    "abab6.5s-chat",
+    "abab6.5g-chat",
+    "abab6.5t-chat",
+]
+
 
 def fetch_gemini_models(api_key: str) -> List[str]:
     """Fetch available models from the Google Gemini API.
@@ -138,3 +150,34 @@ def fetch_groq_models(api_key: str) -> List[str]:
         print(f"[MODELS FETCHER] Groq REST API fallback failed: {e}")
 
     return DEFAULT_GROQ_MODELS
+
+
+def fetch_minimax_models(api_key: str, base_url: str = "https://api.minimax.io/v1") -> List[str]:
+    """Fetch available models from the MiniMax API (OpenAI-compatible endpoint), merging with known models."""
+    combined = list(DEFAULT_MINIMAX_MODELS)
+    if not api_key:
+        return combined
+
+    try:
+        url = f"{base_url.rstrip('/')}/models"
+        req = urllib.request.Request(
+            url,
+            headers={"Authorization": f"Bearer {api_key}"},
+            method="GET",
+        )
+        with urllib.request.urlopen(req, timeout=8) as response:
+            data = json.loads(response.read().decode("utf-8"))
+            models = []
+            for m in data.get("data", []):
+                model_id = m.get("id", "")
+                if model_id:
+                    models.append(model_id)
+
+            for mod in models:
+                if mod not in combined:
+                    combined.append(mod)
+    except Exception as e:
+        print(f"[MODELS FETCHER] MiniMax models listing fallback: {e}")
+
+    return combined
+
