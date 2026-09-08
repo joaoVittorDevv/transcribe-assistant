@@ -61,6 +61,18 @@ export function useRewriteAgents() {
     }
   }
 
+  /**
+   * Boot-time fetch: retries until the backend is up (the renderer can
+   * mount before the FastAPI server finishes starting on a cold launch).
+   */
+  async function fetchAgentsOnBoot(maxAttempts = 15, delayMs = 1000): Promise<void> {
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      await fetchAgents();
+      if (!error.value) return;
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+
   function setActiveAgentId(id: number) {
     activeAgentId.value = id;
   }
@@ -474,6 +486,7 @@ export function useRewriteAgents() {
     isReasoningExpanded,
     error,
     fetchAgents,
+    fetchAgentsOnBoot,
     setActiveAgentId,
     executeRewrite,
     executeRewriteStream,

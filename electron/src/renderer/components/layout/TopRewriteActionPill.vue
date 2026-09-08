@@ -147,7 +147,7 @@ const emit = defineEmits<{
   'open-settings': [tab: string];
 }>();
 
-const { agents, activeAgent, rewriting, fetchAgents, setActiveAgentId, executeRewriteStream } = useRewriteAgents();
+const { agents, activeAgent, rewriting, fetchAgentsOnBoot, setActiveAgentId, executeRewriteStream } = useRewriteAgents();
 const { activeTabId, getActiveTab, updateContent } = useTabs();
 const { getMarkdown } = useEditor();
 
@@ -226,7 +226,7 @@ function handleClickOutside(event: MouseEvent) {
 }
 
 onMounted(() => {
-  fetchAgents();
+  fetchAgentsOnBoot();
   document.addEventListener('click', handleClickOutside);
   document.addEventListener('keydown', handleGlobalKeydown);
 });
