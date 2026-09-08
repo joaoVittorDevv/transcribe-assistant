@@ -404,6 +404,7 @@ class SettingsResponse(PydanticBaseModel):
     network_check_interval: int
     tray_enabled: bool
     persistent_notifications_enabled: bool
+    audio_enhancement_enabled: bool
     alert_interval: int
     alert_transcription_types: str
 
@@ -424,6 +425,7 @@ class SettingsUpdateRequest(PydanticBaseModel):
     network_check_interval: int | None = None
     tray_enabled: bool | None = None
     persistent_notifications_enabled: bool | None = None
+    audio_enhancement_enabled: bool | None = None
     alert_interval: int | None = None
     alert_transcription_types: str | None = None
 
@@ -473,6 +475,7 @@ async def get_settings():
         network_check_interval=config.NETWORK_CHECK_INTERVAL,
         tray_enabled=config.TRAY_ENABLED,
         persistent_notifications_enabled=config.PERSISTENT_NOTIFICATIONS_ENABLED,
+        audio_enhancement_enabled=db.get_setting("AUDIO_ENHANCEMENT_ENABLED", "true").strip().lower() != "false",
         alert_interval=config.ALERT_INTERVAL,
         alert_transcription_types=config.ALERT_TRANSCRIPTION_TYPES,
     )
@@ -555,6 +558,8 @@ async def update_settings(body: SettingsUpdateRequest):
         db.set_setting("TRAY_ENABLED", str(body.tray_enabled))
     if body.persistent_notifications_enabled is not None:
         db.set_setting("PERSISTENT_NOTIFICATIONS_ENABLED", str(body.persistent_notifications_enabled))
+    if body.audio_enhancement_enabled is not None:
+        db.set_setting("AUDIO_ENHANCEMENT_ENABLED", str(body.audio_enhancement_enabled))
     if body.alert_interval is not None:
         db.set_setting("ALERT_INTERVAL", str(body.alert_interval))
     if body.alert_transcription_types is not None:

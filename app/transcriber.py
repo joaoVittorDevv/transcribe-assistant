@@ -294,14 +294,47 @@ class Transcriber:
         # If audio_path is a list, it represents Dual Mode (microphone + system audio)
         if isinstance(audio_path, list):
             print(f"[DEBUG] Transcriber: áudio dual (multi-faixas) detectado, redirecionando para Gemini")
-            return self._transcribe_gemini(
-                audio_path=audio_path,
-                prompt_text=prompt_text,
-                keywords=keywords,
-                on_chunk=on_chunk,
-                source="dual",
-                on_status=on_status
-            )
+            from app import audio_enhancer
+            enhanced_paths, cleanup_enhanced = audio_enhancer.enhance_dual_files(audio_path)
+            try:
+                return self._transcribe_gemini(
+                    audio_path=enhanced_paths,
+                    prompt_text=prompt_text,
+                    keywords=keywords,
+                    on_chunk=on_chunk,
+                    source="dual",
+                    on_status=on_status
+                )
+            finally:
+                cleanup_enhanced()
+
+        # Mic pipeline: mesmo enhancement do dual (denoise + LUFS) sobre uma cópia.
+        # ponytail: source=="system" fica fora por enquanto — ativar quando pedir.
+        if source == "mic" and isinstance(audio_path, Path):
+            from app import audio_enhancer
+            (audio_path,), cleanup_enhanced = audio_enhancer.enhance_dual_files([audio_path])
+            try:
+                return self._transcribe_single(
+                    audio_path, prompt_text, keywords, mode, on_chunk, source, on_status
+                )
+            finally:
+                cleanup_enhanced()
+
+        return self._transcribe_single(
+            audio_path, prompt_text, keywords, mode, on_chunk, source, on_status
+        )
+
+    def _transcribe_single(
+        self,
+        audio_path: Path,
+        prompt_text: str,
+        keywords: list[str],
+        mode: TranscriptionMode,
+        on_chunk: callable,
+        source: str,
+        on_status: callable,
+    ) -> str:
+        """Route a single (non-dual) WAV to a backend."""
 
         # Audio files longer than 10 minutes are always sent to Gemini,
         # regardless of the selected mode — Groq has a 25 MB file limit
