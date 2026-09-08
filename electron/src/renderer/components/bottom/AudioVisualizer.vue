@@ -1,9 +1,12 @@
 <template>
-  <div class="flex items-end gap-0.5 h-8 px-2">
+  <div class="flex items-end gap-1 h-6 px-2 bg-[#13151A] border border-[#2D3342] rounded py-1 shadow-inner">
     <div
       v-for="(bar, i) in bars"
       :key="i"
-      class="w-1.5 rounded-full bg-accent-blue transition-all duration-150"
+      :class="[
+        'w-1 rounded-sm transition-all duration-100',
+        isActive ? 'bg-[#F59E0B] shadow-[0_0_6px_rgba(245,158,11,0.5)]' : 'bg-[#2D3342]'
+      ]"
       :style="{ height: bar + 'px' }"
     ></div>
   </div>

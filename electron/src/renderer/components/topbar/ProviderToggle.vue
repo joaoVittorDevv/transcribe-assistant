@@ -1,14 +1,14 @@
 <template>
-  <div class="flex items-center gap-1 glass-surface rounded-xl p-1">
+  <div class="flex items-center bg-[#16181F] p-0.5 rounded-lg border border-[#2D3342] shadow-sm">
     <button
       v-for="option in options"
       :key="option.value"
       @click="setProvider(option.value)"
       :class="[
-        'px-3 py-1.5 rounded-xl text-xs font-plus-jakarta font-semibold transition-all duration-150',
+        'px-2.5 h-7 rounded-md text-[11px] font-inter font-medium transition-all duration-150 cursor-pointer flex items-center justify-center',
         selectedProvider === option.value
-          ? 'bg-accent-blue/20 text-accent-blue'
-          : 'text-text-muted hover:text-text-primary'
+          ? 'bg-[#222733] text-[#F59E0B] font-semibold shadow-xs'
+          : 'text-[#909095] hover:text-[#DDE2F6] hover:bg-[#1A1D24]'
       ]"
     >
       {{ option.label }}

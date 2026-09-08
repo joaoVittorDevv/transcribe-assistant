@@ -3,10 +3,10 @@
     type="button"
     @click="emit('click')"
     :class="[
-      'w-8 h-8 flex items-center justify-center glass-btn rounded-lg transition-all duration-150',
+      'w-7 h-7 flex items-center justify-center rounded border transition-all duration-150',
       active
-        ? 'text-accent-blue bg-accent-blue/15'
-        : 'text-text-muted hover:text-accent-blue'
+        ? 'text-[#F59E0B] bg-[#F59E0B]/15 border-[#F59E0B]/40 shadow-sm'
+        : 'text-[#909095] border-transparent hover:text-[#DDE2F6] hover:bg-[#222733] hover:border-[#2D3342]'
     ]"
     :title="title"
   >
@@ -18,3 +18,4 @@
 defineProps<{ title?: string; active?: boolean }>();
 const emit = defineEmits<{ click: [] }>();
 </script>
+

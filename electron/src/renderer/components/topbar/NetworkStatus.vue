@@ -1,9 +1,20 @@
 <template>
-  <div class="flex items-center gap-1.5 px-3 py-1.5 glass-surface rounded-xl">
-    <span :class="['h-2 w-2 rounded-full', isOnline ? 'bg-accent-green' : 'bg-yellow-500']"></span>
-    <span class="text-xs font-plus-jakarta font-medium text-text-muted">
-      {{ isOnline ? t('network.online') : t('network.offline') }}
-    </span>
+  <div
+    class="relative flex items-center justify-center w-6 h-6 cursor-default"
+    :title="isOnline ? 'Online • Sistema conectado' : 'Offline • Sem conexão'"
+  >
+    <span
+      v-if="isOnline"
+      class="absolute inline-flex h-2 w-2 rounded-full bg-[#10B981] opacity-70 animate-ping"
+    ></span>
+    <span
+      :class="[
+        'relative inline-flex h-2 w-2 rounded-full transition-all duration-300',
+        isOnline
+          ? 'bg-[#10B981] shadow-[0_0_8px_rgba(16,185,129,0.9)]'
+          : 'bg-[#EF4444] shadow-[0_0_8px_rgba(239,68,68,0.9)]'
+      ]"
+    ></span>
   </div>
 </template>
 

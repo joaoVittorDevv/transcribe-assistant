@@ -1,5 +1,5 @@
 <template>
-  <div class="glass-surface px-4 py-2 font-plus-jakarta text-sm font-semibold text-text-primary tabular-nums min-w-[64px] text-center">
+  <div class="bg-[#13151A] border border-[#2D3342] rounded px-2.5 py-1 font-mono text-xs font-semibold text-[#DDE2F6] tabular-nums min-w-[56px] text-center shadow-inner">
     {{ formatted }}
   </div>
 </template>

@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 
 @tailwind base;
 @tailwind components;
@@ -13,56 +13,154 @@
     height: 100%;
     margin: 0;
     padding: 0;
-    background: linear-gradient(135deg, #121B26 0%, #0F1720 100%);
-    font-family: 'Plus Jakarta Sans', sans-serif;
-    color: #E0E0E0;
+    background-color: #13151A;
+    font-family: 'Inter', 'Plus Jakarta Sans', sans-serif;
+    color: #DDE2F6;
+    overflow: hidden;
   }
 }
 
 @layer components {
+  /* Bento UI System Tokens */
+  .bento-card {
+    background: #1A1D24;
+    border: 1px solid #2D3342;
+    border-radius: 8px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+  }
+
+  .bento-card-raised {
+    background: #222733;
+    border: 1px solid #3F444E;
+    border-radius: 8px;
+  }
+
+  .bento-btn {
+    background: #222733;
+    border: 1px solid #2D3342;
+    border-radius: 6px;
+    color: #DDE2F6;
+    font-family: 'Inter', sans-serif;
+    font-size: 0.75rem;
+    font-weight: 500;
+    transition: all 0.15s ease;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+  }
+
+  .bento-btn:hover {
+    background: #2A303F;
+    border-color: #3F444E;
+    color: #FFFFFF;
+  }
+
+  .bento-btn-primary {
+    background: #F59E0B;
+    border: 1px solid #D97706;
+    color: #13151A;
+    font-weight: 600;
+  }
+
+  .bento-btn-primary:hover {
+    background: #FBBF24;
+    border-color: #F59E0B;
+    box-shadow: 0 0 12px rgba(245, 158, 11, 0.35);
+  }
+
+  .bento-input {
+    background: #13151A;
+    border: 1px solid #2D3342;
+    border-radius: 6px;
+    color: #DDE2F6;
+    font-family: 'Inter', sans-serif;
+    outline: none;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  }
+
+  .bento-input:focus {
+    border-color: #3B82F6;
+    box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
+  }
+
+  .bento-input::placeholder {
+    color: #6B7280;
+  }
+
+  /* Diarization & Transcription Speaker Highlights */
+  .speaker-badge-user {
+    background: rgba(59, 130, 246, 0.15);
+    border: 1px solid rgba(59, 130, 246, 0.4);
+    color: #60A5FA;
+    font-weight: 600;
+    border-radius: 4px;
+    padding: 1px 6px;
+    font-size: 0.75rem;
+    display: inline-flex;
+    align-items: center;
+    margin-right: 6px;
+  }
+
+  .speaker-badge-guest {
+    background: rgba(245, 158, 11, 0.15);
+    border: 1px solid rgba(245, 158, 11, 0.4);
+    color: #FBBF24;
+    font-weight: 600;
+    border-radius: 4px;
+    padding: 1px 6px;
+    font-size: 0.75rem;
+    display: inline-flex;
+    align-items: center;
+    margin-right: 6px;
+  }
+
+  .diarization-separator {
+    display: block;
+    height: 1px;
+    background: #2D3342;
+    margin: 12px 0;
+  }
+
+  /* Backward Compatibility with legacy glass classes */
   .glass-surface {
-    background: rgba(20, 32, 48, 0.6);
-    backdrop-filter: blur(16px);
-    -webkit-backdrop-filter: blur(16px);
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 16px;
+    background: #1A1D24;
+    border: 1px solid #2D3342;
+    border-radius: 8px;
   }
 
   .glass-btn {
-    background: rgba(20, 32, 48, 0.8);
-    backdrop-filter: blur(8px);
-    -webkit-backdrop-filter: blur(8px);
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 12px;
-    color: #E0E0E0;
-    font-family: 'Plus Jakarta Sans', sans-serif;
+    background: #222733;
+    border: 1px solid #2D3342;
+    border-radius: 6px;
+    color: #DDE2F6;
+    font-family: 'Inter', sans-serif;
     font-weight: 500;
     transition: all 0.15s ease;
     cursor: pointer;
   }
 
   .glass-btn:hover {
-    background: rgba(30, 42, 58, 0.8);
-    border-color: rgba(255, 255, 255, 0.2);
+    background: #2A303F;
+    border-color: #3F444E;
   }
 
   .glass-input {
-    background: rgba(20, 32, 48, 0.4);
-    backdrop-filter: blur(8px);
-    -webkit-backdrop-filter: blur(8px);
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 12px;
-    color: #E0E0E0;
-    font-family: 'Plus Jakarta Sans', sans-serif;
+    background: #13151A;
+    border: 1px solid #2D3342;
+    border-radius: 6px;
+    color: #DDE2F6;
+    font-family: 'Inter', sans-serif;
     outline: none;
   }
 
   .glass-input:focus {
-    border-color: rgba(59, 130, 246, 0.5);
-    box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.25);
+    border-color: #3B82F6;
+    box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
   }
 
   .glass-input::placeholder {
-    color: #828282;
+    color: #6B7280;
   }
 }

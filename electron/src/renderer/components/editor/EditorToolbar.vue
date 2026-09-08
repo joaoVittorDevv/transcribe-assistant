@@ -1,5 +1,5 @@
 <template>
-  <div class="flex flex-wrap items-center gap-1 p-2 glass-surface mb-1">
+  <div class="flex flex-wrap items-center gap-1 px-2 py-1.5 bg-[#1A1D24] border border-[#2D3342] rounded-md mb-2 shadow-sm">
     <ToolbarBtn
       :active="activeFormats.has('bold')"
       @click="format('bold')"

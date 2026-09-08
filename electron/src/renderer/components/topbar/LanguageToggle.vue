@@ -1,14 +1,14 @@
 <template>
-  <div class="flex items-center gap-1 glass-surface rounded-xl p-1">
+  <div class="flex items-center gap-0.5 bg-[#16181F] border border-[#2D3342] rounded-md p-0.5 shadow-sm">
     <button
       v-for="lang in langs"
       :key="lang"
       @click="switchLang(lang)"
       :class="[
-        'px-2.5 py-1 rounded-xl text-xs font-plus-jakarta font-semibold transition-all duration-150',
+        'px-2 py-1 rounded text-xs font-inter font-semibold transition-all duration-150',
         currentLocale === lang
-          ? 'bg-accent-blue/20 text-accent-blue'
-          : 'text-text-muted hover:text-text-primary'
+          ? 'bg-[#222733] border border-[#3F444E] text-[#DDE2F6] shadow-sm'
+          : 'text-[#909095] border border-transparent hover:text-[#DDE2F6] hover:bg-[#1A1D24]'
       ]"
     >
       {{ lang.toUpperCase() }}

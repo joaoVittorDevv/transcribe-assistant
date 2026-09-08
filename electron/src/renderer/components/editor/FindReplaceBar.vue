@@ -1,13 +1,13 @@
 <template>
   <div
     v-if="visible"
-    class="find-replace-bar glass-surface flex flex-col gap-2 p-3 rounded-xl animate-slide-in"
+    class="find-replace-bar bg-[#1A1D24] border border-[#2D3342] flex flex-col gap-2 p-2.5 rounded-md mb-2 shadow-xl animate-slide-in font-inter select-none"
   >
     <!-- Search row -->
     <div class="flex items-center gap-2">
       <div class="flex-1 relative">
         <svg
-          class="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-gray-400"
+          class="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[#909095]"
           fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"
         >
           <path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
@@ -17,19 +17,37 @@
           v-model="searchText"
           type="text"
           :placeholder="t('find.search_placeholder')"
-          class="w-full bg-white/5 border border-white/10 rounded-lg py-1.5 pl-8 pr-3 text-sm text-gray-200 placeholder-gray-500 focus:outline-none focus:border-accent-blue/50"
+          class="w-full bg-[#13151A] border border-[#2D3342] rounded py-1 pl-8 pr-14 text-xs text-[#DDE2F6] placeholder-[#909095]/60 focus:outline-none focus:border-[#3B82F6] focus:ring-1 focus:ring-[#3B82F6]/30 font-inter"
           @input="onSearchInput"
           @keydown="onKeydown"
         />
+
+        <!-- In-input toggle: Case Sensitive (Aa) -->
+        <button
+          type="button"
+          @click="toggleCaseSensitive"
+          :class="[
+            'absolute right-1.5 top-1/2 -translate-y-1/2 px-1.5 py-0.5 rounded text-[10px] font-mono font-bold transition-colors',
+            caseSensitive
+              ? 'bg-[#3B82F6] text-white'
+              : 'text-[#909095] hover:text-[#DDE2F6] hover:bg-[#222733]'
+          ]"
+          title="Diferenciar maiúsculas/minúsculas (Aa)"
+        >
+          Aa
+        </button>
       </div>
 
-      <span class="text-xs text-gray-400 min-w-[60px] text-right tabular-nums">
+      <!-- Match Counter -->
+      <span class="text-[11px] text-[#909095] min-w-[54px] text-right font-mono tabular-nums">
         {{ matchCountText }}
       </span>
 
+      <!-- Match Navigation (Previous / Next) -->
       <button
-        class="p-1.5 rounded-md hover:bg-white/10 text-gray-400 hover:text-gray-200 transition-colors"
-        :title="t('find.previous')"
+        type="button"
+        class="p-1 rounded hover:bg-[#222733] text-[#909095] hover:text-[#DDE2F6] border border-transparent hover:border-[#2D3342] transition-colors"
+        :title="`${t('find.previous')} (Shift+Enter)`"
         @click="$emit('prev')"
       >
         <svg class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
@@ -37,8 +55,9 @@
         </svg>
       </button>
       <button
-        class="p-1.5 rounded-md hover:bg-white/10 text-gray-400 hover:text-gray-200 transition-colors"
-        :title="t('find.next')"
+        type="button"
+        class="p-1 rounded hover:bg-[#222733] text-[#909095] hover:text-[#DDE2F6] border border-transparent hover:border-[#2D3342] transition-colors"
+        :title="`${t('find.next')} (Enter)`"
         @click="$emit('next')"
       >
         <svg class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
@@ -46,9 +65,11 @@
         </svg>
       </button>
 
+      <!-- Close Button -->
       <button
-        class="p-1.5 rounded-md hover:bg-white/10 text-gray-400 hover:text-red-400 transition-colors"
-        :title="t('find.close')"
+        type="button"
+        class="p-1 rounded hover:bg-[#222733] text-[#909095] hover:text-[#EF4444] border border-transparent hover:border-[#2D3342] transition-colors"
+        :title="`${t('find.close')} (Esc)`"
         @click="$emit('close')"
       >
         <svg class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
@@ -61,22 +82,25 @@
     <div class="flex items-center gap-2">
       <div class="flex-1 relative">
         <input
+          ref="replaceInputEl"
           v-model="replaceText"
           type="text"
           :placeholder="t('find.replace_placeholder')"
-          class="w-full bg-white/5 border border-white/10 rounded-lg py-1.5 px-3 text-sm text-gray-200 placeholder-gray-500 focus:outline-none focus:border-accent-blue/50"
+          class="w-full bg-[#13151A] border border-[#2D3342] rounded py-1 px-3 text-xs text-[#DDE2F6] placeholder-[#909095]/60 focus:outline-none focus:border-[#3B82F6] focus:ring-1 focus:ring-[#3B82F6]/30 font-inter"
           @keydown="onReplaceKeydown"
         />
       </div>
       <button
-        class="px-2.5 py-1 text-xs font-medium rounded-md bg-white/10 text-gray-300 hover:bg-white/20 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+        type="button"
+        class="px-2.5 py-1 text-xs font-medium rounded bg-[#222733] border border-[#2D3342] text-[#DDE2F6] hover:bg-[#2A303F] hover:border-[#3F444E] transition-colors disabled:opacity-30 disabled:cursor-not-allowed font-inter"
         :disabled="!canReplace"
         @click="$emit('replace')"
       >
         {{ t('find.replace') }}
       </button>
       <button
-        class="px-2.5 py-1 text-xs font-medium rounded-md bg-accent-blue/20 text-accent-blue hover:bg-accent-blue/30 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+        type="button"
+        class="px-2.5 py-1 text-xs font-semibold rounded bg-[#3B82F6]/15 border border-[#3B82F6]/40 text-[#60A5FA] hover:bg-[#3B82F6]/25 transition-colors disabled:opacity-30 disabled:cursor-not-allowed font-inter"
         :disabled="!canReplace"
         @click="$emit('replace-all')"
       >
@@ -94,21 +118,24 @@ const props = defineProps<{
   visible: boolean;
   matchCount: number;
   activeMatchIndex: number;
+  initialMode?: 'find' | 'replace';
 }>();
 
 const emit = defineEmits<{
-  search: [text: string];
+  search: [text: string, caseSensitive: boolean];
   next: [];
   prev: [];
   replace: [];
   'replace-all': [];
   close: [];
-  'update:searchText': [text: string];
+  'update:caseSensitive': [value: boolean];
 }>();
 
 const searchText = ref('');
 const replaceText = ref('');
+const caseSensitive = ref(false);
 const searchInputEl = ref<HTMLInputElement | null>(null);
+const replaceInputEl = ref<HTMLInputElement | null>(null);
 
 const matchCountText = computed(() => {
   if (!searchText.value) return '';
@@ -122,11 +149,21 @@ const canReplace = computed(() => {
 
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 
+function triggerSearch() {
+  emit('search', searchText.value, caseSensitive.value);
+}
+
 function onSearchInput() {
   if (debounceTimer) clearTimeout(debounceTimer);
   debounceTimer = setTimeout(() => {
-    emit('search', searchText.value);
-  }, 200);
+    triggerSearch();
+  }, 150);
+}
+
+function toggleCaseSensitive() {
+  caseSensitive.value = !caseSensitive.value;
+  emit('update:caseSensitive', caseSensitive.value);
+  triggerSearch();
 }
 
 function onKeydown(e: KeyboardEvent) {
@@ -148,6 +185,9 @@ function onReplaceKeydown(e: KeyboardEvent) {
     if (canReplace.value) {
       emit('replace');
     }
+  } else if (e.key === 'Escape') {
+    e.preventDefault();
+    emit('close');
   }
 }
 
@@ -155,15 +195,24 @@ watch(
   () => props.visible,
   async (v) => {
     if (v) {
-      searchText.value = '';
-      replaceText.value = '';
       await nextTick();
-      searchInputEl.value?.focus();
+      if (props.initialMode === 'replace') {
+        replaceInputEl.value?.focus();
+      } else {
+        searchInputEl.value?.focus();
+        searchInputEl.value?.select();
+      }
     }
   }
 );
 
-defineExpose({ searchText, replaceText });
+defineExpose({
+  searchText,
+  replaceText,
+  caseSensitive,
+  focusSearch: () => searchInputEl.value?.focus(),
+  focusReplace: () => replaceInputEl.value?.focus(),
+});
 </script>
 
 <style scoped>

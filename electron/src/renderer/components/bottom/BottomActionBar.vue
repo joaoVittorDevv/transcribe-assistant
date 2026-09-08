@@ -8,23 +8,22 @@
   <Transition name="toast-slide">
     <div
       v-if="showUndoToast"
-      class="flex items-center justify-between gap-3 px-4 py-2.5 mx-4 mb-2 glass-surface rounded-xl"
+      class="flex items-center justify-between gap-3 px-3 py-2 mx-4 mb-2 bg-[#1A1D24] border border-[#2D3342] rounded-md shadow-lg"
     >
-      <span class="text-xs text-text-primary">{{ t('toast.content_cleared') }}</span>
+      <span class="text-xs text-[#DDE2F6] font-inter">{{ t('toast.content_cleared') }}</span>
       <button
         @click="handleUndo"
-        class="text-xs font-semibold text-accent-blue hover:text-blue-400 transition-colors duration-100 px-2 py-1 rounded-lg hover:bg-white/5"
+        class="text-xs font-semibold text-[#F59E0B] hover:text-[#FBBF24] transition-colors px-2 py-0.5 rounded hover:bg-[#222733]"
       >{{ t('toast.undo') }}</button>
     </div>
   </Transition>
 
-  <div class="flex items-center gap-3 px-4 py-3 border-t border-white/10">
-    <!-- Left: Timer -->
-    <Timer :seconds="elapsedSeconds" />
-
-    <!-- Center-left: Visualizer -->
-    <AudioVisualizer :is-active="transcriptionState === 'RECORDING'" />
-
+  <div class="mx-3 mb-3 px-3 py-2 bg-[#16181F] border border-[#2D3342] rounded-lg shadow-lg flex items-center justify-between gap-3">
+    <!-- Left: Timer + Visualizer -->
+    <div class="flex items-center gap-2">
+      <Timer :seconds="elapsedSeconds" />
+      <AudioVisualizer :is-active="transcriptionState === 'RECORDING'" />
+    </div>
 
     <!-- Center: Record button (always centered) -->
     <div class="flex-1 flex items-center justify-center">
@@ -38,19 +37,19 @@
     </div>
 
     <!-- Right: Copy + Reset -->
-    <div class="flex items-center gap-2">
-      <button @click="handleCopy" class="glass-btn flex items-center gap-1.5 text-xs py-1.5 px-3">
-        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+    <div class="flex items-center gap-1.5">
+      <button @click="handleCopy" class="bento-btn py-1 px-2.5 text-xs">
+        <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.75">
           <path v-if="copyFeedback === 'idle'" stroke-linecap="round" stroke-linejoin="round" d="M15.666 3.888A2.25 2.25 0 0013.5 2.25h-3c-1.03 0-1.9.693-2.166 1.638m7.332 0c.055.194.084.4.084.612v0a.75.75 0 01-.75.75H9a.75.75 0 01-.75-.75v0c0-.212.03-.418.084-.612m7.332 0c.646.049 1.288.11 1.927.184 1.1.128 1.907 1.077 1.907 2.185V19.5a2.25 2.25 0 01-2.25 2.25H6.75A2.25 2.25 0 014.5 19.5V6.257c0-1.108.806-2.057 1.907-2.185a48.208 48.208 0 011.927-.184" />
           <path v-else-if="copyFeedback === 'success'" stroke-linecap="round" stroke-linejoin="round" d="M4.5 12.75l6 6 9-13.5" />
           <path v-else stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
         </svg>
         <span v-if="copyFeedback === 'idle'">{{ t('buttons.copy') }}</span>
-        <span v-else-if="copyFeedback === 'success'" class="text-green-400">{{ t('toast.copied') }}</span>
-        <span v-else class="text-red-400">{{ t('toast.copy_error') }}</span>
+        <span v-else-if="copyFeedback === 'success'" class="text-[#10B981] font-semibold">{{ t('toast.copied') }}</span>
+        <span v-else class="text-[#EF4444] font-semibold">{{ t('toast.copy_error') }}</span>
       </button>
-      <button @click="handleReset" class="glass-btn flex items-center gap-1.5 text-xs py-1.5 px-3">
-        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+      <button @click="handleReset" class="bento-btn py-1 px-2.5 text-xs" :title="t('buttons.reset')">
+        <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-[#909095] hover:text-[#DDE2F6]" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.75">
           <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99" />
         </svg>
         {{ t('buttons.reset') }}

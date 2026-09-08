@@ -26,7 +26,7 @@ onUnmounted(() => {
   flex-direction: row;
   width: 100%;
   height: 100%;
-  background: linear-gradient(135deg, #121B26 0%, #0F1720 100%);
+  background-color: #13151A;
   overflow: hidden;
 }
 </style>

@@ -12,9 +12,10 @@
     <!-- Add tab button -->
     <button
       @click="addTab"
-      class="flex-shrink-0 w-8 h-8 glass-surface rounded-xl flex items-center justify-center text-text-muted hover:text-accent-blue transition-colors duration-150"
+      class="flex-shrink-0 w-7 h-7 bg-[#1A1D24] border border-[#2D3342] hover:border-[#3F444E] rounded-md flex items-center justify-center text-[#909095] hover:text-[#F59E0B] transition-colors duration-150"
+      title="Nova Sessão"
     >
-      <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+      <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor">
         <path fill-rule="evenodd" d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" clip-rule="evenodd" />
       </svg>
     </button>
