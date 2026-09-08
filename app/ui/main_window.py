@@ -1,8 +1,8 @@
 """app.ui.main_window — Primary application window.
 
 Orchestrates all backend services (AudioRecorder, NetworkMonitor,
-Transcriber) and UI sub-components (VUMeter) into a single
-cohesive CustomTkinter interface.
+Transcriber) and UI sub-components (Sidebar, VUMeter, HistoryWindow)
+into a single cohesive CustomTkinter interface.
 
 Threading strategy:
   - Audio capture callback → Queue → root.after() polling → UI update
@@ -28,8 +28,14 @@ from app.audio_validator import (
 )
 from app.network_monitor import NetworkMonitor
 from app.transcriber import Transcriber, TranscriptionError
+from app.ui.history_window import HistoryWindow
+from app.ui.markdown_editor import MarkdownEditor
 from app.ui.native_dialog import open_audio_file
+from app.ui.sidebar import Sidebar
 from app.ui.vu_meter import VUMeter
+from app.utils.tray_manager import TrayManager
+from app.utils.notification_manager import send_notification
+import app.config as config
 
 # Queue used to safely post events from worker threads to the UI thread
 _ui_queue: queue.Queue = queue.Queue()
@@ -74,10 +80,11 @@ class MainWindow(ctk.CTk):
         self._tab_count = 0
         self._active_tab: str | None = None
         self._is_recording = False
+        self._audio_mode = "mic"  # "mic" or "system"
         self._record_start_time: float | None = None
         self._rms_queue: queue.Queue[float] = queue.Queue()
         self._save_timers: dict[str, str | None] = {}
-        self._current_audio_source: str = "microphone"
+        self._current_request_id: int = 0
 
         # --- Services ---
         self._recorder = AudioRecorder(on_rms_update=self._on_rms)
@@ -100,6 +107,25 @@ class MainWindow(ctk.CTk):
         self._poll_ui_queue()
         self._poll_rms_queue()
 
+        # --- Check for API keys and prompt settings if missing ---
+        from app.config import GOOGLE_API_KEY, GROQ_API_KEY
+        if not GOOGLE_API_KEY or not GROQ_API_KEY:
+            self.after(500, self._open_settings)
+
+        # --- System Tray Setup ---
+        self._tray_manager = TrayManager(
+            on_restore_clicked=self._restore_from_tray,
+            on_stop_clicked=self._stop_recording_from_tray,
+            on_pause_clicked=self._pause_recording_from_tray,
+            on_exit_clicked=self._exit_app_completely
+        )
+        if self._tray_manager.is_available() and getattr(config, "TRAY_ENABLED", False):
+            self._tray_manager.start()
+
+        # --- Active Recording reminder tracking ---
+        self._last_alert_time: float = 0.0
+        self._check_recording_alert_loop()
+
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     # ==================================================================
@@ -107,12 +133,19 @@ class MainWindow(ctk.CTk):
     # ==================================================================
 
     def _build_layout(self) -> None:
-        self.grid_columnconfigure(0, weight=1)
+        self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
 
-        # ---- Main area ----
+        # ---- Sidebar (left) ----
+        self._sidebar = Sidebar(
+            self,
+            on_prompt_changed=lambda: None,  # No extra action needed
+        )
+        self._sidebar.grid(row=0, column=0, sticky="nsew")
+
+        # ---- Main area (right) ----
         main = ctk.CTkFrame(self, fg_color="transparent")
-        main.grid(row=0, column=0, sticky="nsew", padx=16, pady=16)
+        main.grid(row=0, column=1, sticky="nsew", padx=16, pady=16)
         main.grid_columnconfigure(0, weight=1)
         main.grid_rowconfigure(1, weight=1)
 
@@ -132,11 +165,11 @@ class MainWindow(ctk.CTk):
             values=[
                 i18n.t("ui.modes.automatic"),
                 i18n.t("ui.modes.google"),
-                i18n.t("ui.modes.groq"),
+                i18n.t("ui.modes.whisper"),
             ],
             command=lambda _: None,
         )
-        self._mode_selector.set(i18n.t("ui.modes.google"))
+        self._mode_selector.set(i18n.t("ui.modes.automatic"))
         self._mode_selector.grid(row=0, column=0, sticky="w")
 
         # Right-side status: network + history button
@@ -188,7 +221,7 @@ class MainWindow(ctk.CTk):
             text_fn=lambda: i18n.t("ui.buttons.import_audio"),
         )
 
-        # Settings / prompt modal button (gear icon)
+        # Settings icon button (discrete, no label)
         self._settings_btn = ctk.CTkButton(
             status_frame,
             text="⚙",
@@ -198,15 +231,23 @@ class MainWindow(ctk.CTk):
             fg_color="transparent",
             hover_color=("gray75", "gray30"),
             corner_radius=8,
-            command=self._open_prompt_modal,
+            command=self._open_settings,
         )
-        self._settings_btn.pack(side="left")
+        self._settings_btn.pack(side="left", padx=(0, 6))
 
         # Tooltip for settings button
         self._settings_tooltip = _Tooltip(
             self._settings_btn,
-            text_fn=lambda: i18n.t("ui.buttons.settings"),
+            text_fn=lambda: i18n.t("ui.settings.title"),
         )
+
+        self._history_btn = ctk.CTkButton(
+            status_frame,
+            text=i18n.t("ui.buttons.history"),
+            width=110,
+            command=self._open_history,
+        )
+        self._history_btn.pack(side="left")
 
     def _build_text_area(self, parent) -> None:
         """Editable transcription text area with custom tabs."""
@@ -284,16 +325,15 @@ class MainWindow(ctk.CTk):
 
         self._new_tab_btn_top.pack(side="left", padx=(0, 4), pady=4)
 
-        textbox = ctk.CTkTextbox(
+        textbox = MarkdownEditor(
             self._content_frame,
-            font=("", 14),
-            wrap="word",
-            state="normal",
         )
         textbox.grid(row=0, column=0, sticky="nsew", pady=0)
-        textbox.insert("1.0", content)
-        textbox.bind(
-            "<KeyRelease>", lambda event, t=name: self._on_text_change(t, event)
+        textbox.insert_text(content, index="1.0")
+
+        # O método BindTextChange lida com a assinatura <KeyRelease> e injeta o callback
+        textbox.bind_text_change(
+            lambda event=None, t=name: self._on_text_change(t, event)
         )
 
         self._tabs_data[name] = {
@@ -331,6 +371,8 @@ class MainWindow(ctk.CTk):
         """Bottom controls: timer, VU meter, record button, copy, reset."""
         controls = ctk.CTkFrame(parent, fg_color="transparent")
         controls.grid(row=2, column=0, sticky="ew")
+        # Column 3 acts as a flexible spacer between status label and buttons
+        controls.grid_columnconfigure(3, weight=1)
 
         # Timer
         self._timer_label = ctk.CTkLabel(
@@ -343,26 +385,13 @@ class MainWindow(ctk.CTk):
 
         # VU Meter
         self._vu_meter = VUMeter(controls, width=28, height=50)
-        self._vu_meter.grid(row=0, column=1, sticky="w", padx=(0, 8))
-
-        # Audio source selector (microphone / system audio)
-        self._source_selector = ctk.CTkSegmentedButton(
-            controls,
-            values=[
-                i18n.t("ui.source.microphone"),
-                i18n.t("ui.source.system_audio"),
-            ],
-            command=self._on_audio_source_change,
-            width=140,
-        )
-        self._source_selector.set(i18n.t("ui.source.microphone"))
-        self._source_selector.grid(row=0, column=2, sticky="w", padx=(0, 12))
+        self._vu_meter.grid(row=0, column=1, sticky="w", padx=(0, 16))
 
         # Status label (shows transcription progress)
         self._status_label = ctk.CTkLabel(
             controls, text="", font=("", 11), text_color="gray"
         )
-        self._status_label.grid(row=0, column=3, sticky="w")
+        self._status_label.grid(row=0, column=2, sticky="w")
 
         # Column 3 acts as a flexible spacer between status label and buttons
         controls.grid_columnconfigure(3, weight=1)
@@ -371,16 +400,36 @@ class MainWindow(ctk.CTk):
         btn_frame = ctk.CTkFrame(controls, fg_color="transparent")
         btn_frame.grid(row=0, column=4, sticky="e")
 
+        # Split Button for Recording
+        self._record_container = ctk.CTkFrame(btn_frame, fg_color="transparent")
+        
         self._record_btn = ctk.CTkButton(
-            btn_frame,
+            self._record_container,
             text=i18n.t("ui.buttons.record"),
-            width=130,
+            width=100,
             height=42,
             font=("", 14, "bold"),
+            corner_radius=0,
             fg_color="#dc2626",
             hover_color="#991b1b",
             command=self._toggle_recording,
         )
+        self._record_btn.pack(side="left")
+        
+        self._record_mode_menu = ctk.CTkOptionMenu(
+            self._record_container,
+            values=["🎙️", "🎧"],
+            width=40,
+            height=42,
+            corner_radius=0,
+            font=("", 16),
+            fg_color="#dc2626",
+            button_color="#dc2626",
+            button_hover_color="#991b1b",
+            dropdown_fg_color="gray30",
+            command=self._on_record_mode_change,
+        )
+        self._record_mode_menu.pack(side="left", padx=(1, 0))
 
         self._cancel_btn = ctk.CTkButton(
             btn_frame,
@@ -393,7 +442,7 @@ class MainWindow(ctk.CTk):
             command=self._cancel_recording,
         )
 
-        self._record_btn.pack(side="left", padx=(0, 8))
+        self._record_container.pack(side="left", padx=(0, 8))
 
         self._copy_btn = ctk.CTkButton(
             btn_frame,
@@ -424,8 +473,8 @@ class MainWindow(ctk.CTk):
         current_mode_idx = 0
         try:
             current_idx_val = self._mode_selector.get()
-            modes_pt = ["Automático", "Google", "Groq"]
-            modes_en = ["Automatic", "Google", "Groq"]
+            modes_pt = ["Automático", "Google", "Whisper"]
+            modes_en = ["Automatic", "Google", "Whisper"]
             if current_idx_val in modes_pt:
                 current_mode_idx = modes_pt.index(current_idx_val)
             elif current_idx_val in modes_en:
@@ -436,17 +485,12 @@ class MainWindow(ctk.CTk):
         new_modes = [
             i18n.t("ui.modes.automatic"),
             i18n.t("ui.modes.google"),
-            i18n.t("ui.modes.groq"),
+            i18n.t("ui.modes.whisper"),
         ]
         self._mode_selector.configure(values=new_modes)
         self._mode_selector.set(new_modes[current_mode_idx])
 
-        # Audio source selector
-        mic_label = i18n.t("ui.source.microphone")
-        sys_label = i18n.t("ui.source.system_audio")
-        self._source_selector.configure(values=[mic_label, sys_label])
-        self._source_selector.set(mic_label if self._current_audio_source == "microphone" else sys_label)
-
+        self._history_btn.configure(text=i18n.t("ui.buttons.history"))
         self._copy_btn.configure(text=i18n.t("ui.buttons.copy"))
         self._reset_btn.configure(text=i18n.t("ui.buttons.reset"))
 
@@ -469,6 +513,8 @@ class MainWindow(ctk.CTk):
 
         self._lang_btn.set("PT" if i18n.get("locale") == "pt" else "EN")
 
+        self._sidebar.refresh_labels()
+
     def _set_language(self, language: str) -> None:
         """Switch language between PT and EN and refresh the UI."""
         new_lang = "pt" if language == "PT" else "en"
@@ -486,10 +532,30 @@ class MainWindow(ctk.CTk):
         else:
             self._start_recording()
 
+    def _on_record_mode_change(self, value: str) -> None:
+        if value == "🎧":
+            self._audio_mode = "system"
+            self._record_btn.configure(fg_color="#b91c1c", hover_color="#991b1b")
+            self._record_mode_menu.configure(fg_color="#b91c1c", button_color="#b91c1c", button_hover_color="#991b1b")
+        else:
+            self._audio_mode = "mic"
+            self._record_btn.configure(fg_color="#dc2626", hover_color="#991b1b")
+            self._record_mode_menu.configure(fg_color="#dc2626", button_color="#dc2626", button_hover_color="#991b1b")
+
     def _start_recording(self) -> None:
         self._is_recording = True
         self._record_start_time = time.time()
-        self._recorder.start_recording()
+        self._recorder.start_recording(mode=self._audio_mode)
+
+        # Update tray icon and trigger start notification
+        self._tray_manager.update_state("recording", is_paused=False)
+        alert_types = getattr(config, "ALERT_TRANSCRIPTION_TYPES", "")
+        if "realtime" in alert_types:
+            send_notification(
+                "Gravação Iniciada",
+                "O Assistente de Transcrição começou a gravar o áudio em segundo plano."
+            )
+        self._last_alert_time = time.time()
 
         # DEBUG - REMOVE LATER
         print("[DEBUG] MainWindow: gravacao iniciada")
@@ -498,6 +564,12 @@ class MainWindow(ctk.CTk):
             text=i18n.t("ui.buttons.transcribe"),
             fg_color="#16a34a",
             hover_color="#15803d",
+        )
+        self._record_mode_menu.configure(
+            fg_color="#16a34a",
+            button_color="#16a34a",
+            button_hover_color="#15803d",
+            state="disabled",
         )
         self._cancel_btn.pack(side="left", padx=(0, 8), before=self._copy_btn)
 
@@ -508,7 +580,6 @@ class MainWindow(ctk.CTk):
 
     def _stop_recording(self) -> None:
         self._is_recording = False
-        self._cancel_btn.pack_forget()
 
         self._record_btn.configure(
             state="disabled", text=i18n.t("ui.status.processing")
@@ -516,6 +587,9 @@ class MainWindow(ctk.CTk):
         self._status_label.configure(
             text=i18n.t("ui.status.transcribing"), text_color="#eab308"
         )
+
+        # Update system tray status
+        self._tray_manager.update_state("transcribing")
 
         # DEBUG - REMOVE LATER
         print("[DEBUG] MainWindow: gravacao parada, iniciando transcricao")
@@ -525,7 +599,7 @@ class MainWindow(ctk.CTk):
         except RuntimeError as exc:
             # DEBUG - REMOVE LATER
             print(f"[DEBUG] MainWindow: erro ao parar gravacao: {exc}")
-            self._finish_transcription_error(str(exc))
+            self._finish_transcription_error((str(exc), self._current_request_id))
             return
 
         # DEBUG - REMOVE LATER
@@ -533,9 +607,11 @@ class MainWindow(ctk.CTk):
 
         # Run transcription in a background thread
         active_tab = self._active_tab
+        request_id = self._current_request_id
+        audio_mode = self._audio_mode
         threading.Thread(
             target=self._transcribe_worker,
-            args=(wav_path, active_tab),
+            args=(wav_path, active_tab, False, request_id, audio_mode),
             daemon=True,
             name="TranscribeWorker",
         ).start()
@@ -543,6 +619,10 @@ class MainWindow(ctk.CTk):
     def _cancel_recording(self) -> None:
         self._is_recording = False
         self._cancel_btn.pack_forget()
+        self._current_request_id += 1  # Invalida a requisição atual
+
+        # Reset tray status
+        self._tray_manager.update_state("idle")
 
         # DEBUG - REMOVE LATER
         print("[DEBUG] MainWindow: gravacao cancelada")
@@ -564,17 +644,31 @@ class MainWindow(ctk.CTk):
         self._timer_label.configure(text="00:00")
 
     def _transcribe_worker(
-        self, wav_path: Path, target_tab_name: str, is_imported: bool = False
+        self,
+        wav_path: Path,
+        target_tab_name: str,
+        is_imported: bool = False,
+        request_id: int = 0,
+        audio_mode: str = "mic",
     ) -> None:
         """Run in the worker thread — posts result to the UI queue."""
-        prompt_data = db.get_default_prompt()
+        prompt_data = self._sidebar.get_active_prompt()
         prompt_text = prompt_data["texto_prompt"] if prompt_data else ""
-        keywords = [row["palavra"] for row in db.get_keywords_by_prompt(prompt_data["id"])] if prompt_data else []
+        keywords = prompt_data["palavras_chave"] if prompt_data else []
+        
+        if audio_mode == "system":
+            # Concatena a instrução de diarização para a etapa de pós-processamento do LLM
+            diarization_instruction = (
+                "\n\n[Instrução Automática do Sistema]: O áudio a seguir contém múltiplos interlocutores. "
+                "Por favor, deduzindo pelo contexto das frases e trocas de turno, separe as falas "
+                "identificando-as explicitamente como 'Pessoa 1:', 'Pessoa 2:', etc."
+            )
+            prompt_text += diarization_instruction
 
         mode_map = {
             i18n.t("ui.modes.automatic"): "auto",
             i18n.t("ui.modes.google"): "gemini",
-            i18n.t("ui.modes.groq"): "groq",
+            i18n.t("ui.modes.whisper"): "whisper",
         }
 
         mode = mode_map.get(self._mode_selector.get(), "auto")
@@ -585,7 +679,15 @@ class MainWindow(ctk.CTk):
         )
 
         try:
-            text = self._transcriber.transcribe(wav_path, prompt_text, keywords, mode)
+            was_streamed = False
+
+            def handle_chunk(chunk_text: str):
+                nonlocal was_streamed
+                was_streamed = True
+                _ui_queue.put(("transcription_chunk", (chunk_text, target_tab_name, request_id)))
+
+            text = self._transcriber.transcribe(wav_path, prompt_text, keywords, mode, on_chunk=handle_chunk)
+            
             # Generate title if session is completely new for this tab
             tab_data = self._tabs_data.get(target_tab_name)
             generated_title = None
@@ -593,18 +695,23 @@ class MainWindow(ctk.CTk):
                 generated_title = self._transcriber.generate_title(text)
 
             _ui_queue.put(
-                ("transcription_done", (text, target_tab_name, generated_title))
+                (
+                    "transcription_done",
+                    (text, target_tab_name, generated_title, request_id, was_streamed),
+                )
             )
         except TranscriptionError as exc:
             # DEBUG - REMOVE LATER
             print(f"[DEBUG] TranscribeWorker: TranscriptionError: {exc}")
-            _ui_queue.put(("transcription_error", str(exc)))
+            _ui_queue.put(("transcription_error", (str(exc), request_id)))
         except Exception as exc:  # noqa: BLE001
             # DEBUG - REMOVE LATER
             print(
                 f"[DEBUG] TranscribeWorker: erro inesperado: {type(exc).__name__}: {exc}"
             )
-            _ui_queue.put(("transcription_error", f"{type(exc).__name__}: {exc}"))
+            _ui_queue.put(
+                ("transcription_error", (f"{type(exc).__name__}: {exc}", request_id))
+            )
         finally:
             # Only delete temporary files from mic recordings, not imported files
             if not is_imported:
@@ -626,29 +733,19 @@ class MainWindow(ctk.CTk):
                     self._finish_transcription_ok(payload)
                 elif event == "transcription_error":
                     self._finish_transcription_error(payload)
+                elif event == "transcription_chunk":
+                    chunk_text, target_tab, request_id = payload
+                    if request_id == self._current_request_id:
+                        self._insert_transcription(chunk_text, target_tab, stream_chunk=True)
                 elif event == "network_change":
                     self._apply_network_status(payload)
                 elif event == "import_rejected":
                     self._finish_import_rejected(payload)
                 elif event == "import_accepted":
                     self._finish_import_accepted()
-                elif event == "transcription_progress":
-                    self._status_label.configure(
-                        text=payload, text_color="#eab308"
-                    )
         except queue.Empty:
             pass
         self.after(_POLL_MS, self._poll_ui_queue)
-
-    def _on_audio_source_change(self, value: str) -> None:
-        """Update the audio source for the recorder."""
-        source = "system_audio" if value == i18n.t("ui.source.system_audio") else "microphone"
-        self._current_audio_source = source
-        self._recorder.set_source(source)
-        import sounddevice as sd
-        device_idx = self._recorder._resolve_device()
-        device_info = sd.query_devices()[device_idx] if device_idx is not None else None
-        print(f"[DEBUG] Audio source set to: {source} | device_idx={device_idx} | device={device_info}")
 
     def _poll_rms_queue(self) -> None:
         """Drain the RMS queue and update the VU meter."""
@@ -664,12 +761,19 @@ class MainWindow(ctk.CTk):
     # Transcription result handlers
     # ==================================================================
 
-    def _finish_transcription_ok(self, payload: tuple[str, str, str | None]) -> None:
-        text, target_tab, new_title = payload
-        if not text:
+    def _finish_transcription_ok(
+        self, payload: tuple[str, str, str | None, int, bool]
+    ) -> None:
+        text, target_tab, new_title, request_id, was_streamed = payload
+        if request_id != self._current_request_id:
+            return  # Invalidated by cancellation
+
+        if not text and not was_streamed:
             text = i18n.t("ui.status.audio_empty")
 
-        self._insert_transcription(text, target_tab)
+        if not was_streamed:
+            self._insert_transcription(text, target_tab)
+            
         self._persist_full_session(target_tab)
 
         if new_title:
@@ -680,7 +784,20 @@ class MainWindow(ctk.CTk):
             text=i18n.t("ui.status.transcription_done"), text_color="#22c55e"
         )
 
-    def _finish_transcription_error(self, message: str) -> None:
+        # Update tray status and trigger final notification
+        self._tray_manager.update_state("idle")
+        alert_types = getattr(config, "ALERT_TRANSCRIPTION_TYPES", "")
+        if "realtime" in alert_types or "file" in alert_types:
+            send_notification(
+                "Transcrição Concluída",
+                f"O áudio da sessão '{target_tab}' foi transcrito com sucesso."
+            )
+
+    def _finish_transcription_error(self, payload: tuple[str, int]) -> None:
+        message, request_id = payload
+        if request_id != self._current_request_id:
+            return  # Invalidated by cancellation
+
         # DEBUG - REMOVE LATER
         print(f"[DEBUG] MainWindow: erro de transcricao: {message}")
         self._restore_record_button()
@@ -689,15 +806,34 @@ class MainWindow(ctk.CTk):
             text_color="#ef4444",
         )
 
+        # Update tray state to error and send alert notification
+        self._tray_manager.update_state("error")
+        send_notification(
+            "Erro de Transcrição",
+            f"Ocorreu um erro ao transcrever o áudio: {message}"
+        )
+
     def _restore_record_button(self) -> None:
+        
+        # Determine current color based on the selected mode
+        color = "#b91c1c" if self._audio_mode == "system" else "#dc2626"
+        
         self._record_btn.configure(
             state="normal",
             text=i18n.t("ui.buttons.record"),
-            fg_color="#dc2626",
+            fg_color=color,
             hover_color="#991b1b",
+        )
+        self._record_mode_menu.configure(
+            fg_color=color,
+            button_color=color,
+            button_hover_color="#991b1b",
+            state="normal",
         )
         self._import_btn.configure(state="normal")
         self._vu_meter.set_level(0.0)
+        # Re-set tray icon to idle
+        self._tray_manager.update_state("idle")
 
     def _finish_import_rejected(self, reason: str) -> None:
         """Handle rejected audio import."""
@@ -720,7 +856,7 @@ class MainWindow(ctk.CTk):
     # Text area helpers
     # ==================================================================
 
-    def _insert_transcription(self, text: str, target_tab: str | None = None) -> None:
+    def _insert_transcription(self, text: str, target_tab: str | None = None, stream_chunk: bool = False) -> None:
         """Insert new transcription text at the current cursor position."""
         if not text:
             return
@@ -733,18 +869,18 @@ class MainWindow(ctk.CTk):
             return
 
         textbox = tab_data["textbox"]
-        cursor_idx = textbox.index("insert")
+        
+        # Smart spacing logic... The MarkdownEditor simplifies this.
+        if not stream_chunk:
+            text = f" {text.strip()}"
 
-        # Smart spacing: add a space if the previous character isn't a space/newline
-        # and we are not at the very beginning.
-        prefix = ""
-        if cursor_idx != "1.0":
-            prev_char = textbox.get(f"{cursor_idx}-1c", cursor_idx)
-            if prev_char and prev_char.strip():
-                prefix = " "
-
-        textbox.insert("insert", f"{prefix}{text}")
-        textbox.see("insert")
+        textbox.insert_text(text)
+        
+        if stream_chunk and getattr(textbox, 'see', None):
+            try:
+                textbox.see("end")
+            except Exception:
+                pass
 
     def _on_text_change(self, tab_name: str, event=None) -> None:
         """Handle manual text edits with debounced auto-save."""
@@ -758,7 +894,7 @@ class MainWindow(ctk.CTk):
         tab_data = self._tabs_data.get(tab_name)
         if not tab_data:
             return ""
-        return tab_data["textbox"].get("1.0", "end").strip()
+        return tab_data["textbox"].get_text()
 
     # ==================================================================
     # Database session management
@@ -798,7 +934,7 @@ class MainWindow(ctk.CTk):
             return
 
         tab_data["session_id"] = None
-        tab_data["textbox"].delete("1.0", "end")
+        tab_data["textbox"].delete_text()
 
         self._timer_label.configure(text="00:00")
         self._status_label.configure(
@@ -887,8 +1023,8 @@ class MainWindow(ctk.CTk):
         )
 
         # Debounce timer needs the new tab name
-        tab_data["textbox"].bind(
-            "<KeyRelease>", lambda event, t=new_name: self._on_text_change(t, event)
+        tab_data["textbox"].bind_text_change(
+            lambda event=None, t=new_name: self._on_text_change(t, event)
         )
 
         self._tabs_data[new_name] = tab_data
@@ -930,9 +1066,28 @@ class MainWindow(ctk.CTk):
                 text=i18n.t("ui.status.copied"), text_color="#22c55e"
             )
 
-    def _open_prompt_modal(self) -> None:
-        from app.ui.prompt_modal import PromptModal
-        PromptModal(self)
+    def _open_history(self) -> None:
+        HistoryWindow(self, on_restore=self._restore_session)
+
+    def _open_settings(self) -> None:
+        """Open the application settings modal window."""
+        from app.ui.settings_modal import SettingsModal
+
+        if hasattr(self, "_settings_modal") and self._settings_modal and self._settings_modal.winfo_exists():
+            self._settings_modal.focus()
+            return
+
+        self._settings_modal = SettingsModal(self, on_saved=self._on_settings_saved)
+
+    def _on_settings_saved(self) -> None:
+        """Refresh labels when settings are saved."""
+        self.refresh_labels()
+        # Synchronize System Tray startup/shutdown based on new configuration
+        if self._tray_manager.is_available():
+            if getattr(config, "TRAY_ENABLED", False):
+                self._tray_manager.start()
+            else:
+                self._tray_manager.stop()
 
     # ==================================================================
     # Audio file import
@@ -972,14 +1127,17 @@ class MainWindow(ctk.CTk):
         )
 
         active_tab = self._active_tab
+        request_id = self._current_request_id
         threading.Thread(
             target=self._import_worker,
-            args=(audio_path, active_tab),
+            args=(audio_path, active_tab, request_id),
             daemon=True,
             name="ImportWorker",
         ).start()
 
-    def _import_worker(self, audio_path: Path, target_tab_name: str) -> None:
+    def _import_worker(
+        self, audio_path: Path, target_tab_name: str, request_id: int
+    ) -> None:
         """Validate and transcribe an imported audio file (runs in thread)."""
         try:
             result = self._audio_validator.validate(audio_path)
@@ -999,11 +1157,13 @@ class MainWindow(ctk.CTk):
 
             # Validation passed — post acceptance and start transcription
             _ui_queue.put(("import_accepted", None))
-            self._transcribe_worker(audio_path, target_tab_name, is_imported=True)
+            self._transcribe_worker(
+                audio_path, target_tab_name, is_imported=True, request_id=request_id
+            )
 
         except Exception as exc:  # noqa: BLE001
             print(f"[DEBUG] ImportWorker: erro: {exc}")
-            _ui_queue.put(("transcription_error", f"Import error: {exc}"))
+            _ui_queue.put(("transcription_error", (f"Import error: {exc}", request_id)))
 
     # ==================================================================
     # Network status
@@ -1037,10 +1197,76 @@ class MainWindow(ctk.CTk):
     # ==================================================================
 
     def _on_close(self) -> None:
+        # If system tray is enabled and available, minimize/hide to tray instead of exiting
+        if self._tray_manager.is_available() and getattr(config, "TRAY_ENABLED", False):
+            self.withdraw()
+            send_notification(
+                "Rodando em segundo plano",
+                "O Assistente de Transcrição foi minimizado para a bandeja do sistema."
+            )
+        else:
+            self._exit_app_completely()
+
+    def _restore_from_tray(self) -> None:
+        """Safely restore and focus the main window from the System Tray thread."""
+        self.after(0, self._restore_window_safely)
+
+    def _restore_window_safely(self) -> None:
+        self.deiconify()
+        self.state("normal")
+        self.focus_force()
+
+    def _stop_recording_from_tray(self) -> None:
+        """Safely trigger recording stop from the System Tray thread."""
         if self._is_recording:
-            self._recorder.stop_recording()
+            self.after(0, self._stop_recording)
+
+    def _pause_recording_from_tray(self) -> None:
+        """Notify user that recording pause is currently unsupported."""
+        send_notification(
+            "Função Indisponível",
+            "A pausa de gravação não é suportada pela placa de som local. Use Parar para transcrever."
+        )
+
+    def _exit_app_completely(self) -> None:
+        """Safely shut down all background threads and release resources."""
+        if self._is_recording:
+            try:
+                self._recorder.stop_recording()
+            except Exception:
+                pass
         self._network_monitor.stop()
+        self._tray_manager.stop()
         self.destroy()
+
+    def _check_recording_alert_loop(self) -> None:
+        """Background loop to alert the user if recording runs for too long."""
+        if self._is_recording and self._record_start_time is not None:
+            elapsed_minutes = (time.time() - self._record_start_time) / 60.0
+            
+            # Check if background alerts are globally enabled
+            if getattr(config, "PERSISTENT_NOTIFICATIONS_ENABLED", True):
+                alert_types = getattr(config, "ALERT_TRANSCRIPTION_TYPES", "")
+                
+                # Check if the active recording mode triggers alerts
+                is_realtime = self._audio_mode == "mic"
+                should_alert = (is_realtime and "realtime" in alert_types) or (not is_realtime and "file" in alert_types)
+                
+                if should_alert:
+                    interval = getattr(config, "ALERT_INTERVAL", 15)
+                    time_since_last = (time.time() - self._last_alert_time) / 60.0 if self._last_alert_time else elapsed_minutes
+                    
+                    # Alert if time exceeded interval, and window is either minimized or has lost focus
+                    is_minimized = self.state() == "iconified" or not self.focus_get()
+                    if elapsed_minutes >= interval and (time_since_last >= interval or self._last_alert_time == 0.0) and is_minimized:
+                        self._last_alert_time = time.time()
+                        send_notification(
+                            "🎙️ Gravação em Progresso",
+                            f"O gravador está ativo há {int(elapsed_minutes)} minutos em segundo plano."
+                        )
+                        
+        # Reschedule check every 15 seconds
+        self.after(15000, self._check_recording_alert_loop)
 
 
 # ======================================================================

@@ -14,6 +14,7 @@ wheels/
 
 # Banco de dados local
 *.db
+*.db.*
 *.sqlite
 *.sqlite3
 
@@ -28,8 +29,28 @@ docs/
 
 # Logs
 *.log
+<<<<<<< HEAD
 
 electron/node_modules
 
 graphify-out/
 .specs/
+=======
+node_modules/
+
+# Electron build output
+out/
+dist/
+
+# Vite cache
+.vite/
+
+# Ruff cache
+.ruff_cache/
+
+# Claude local config
+.claude/
+.specs/
+graphify-out/
+.a5c/
+>>>>>>> feat/electron-interface

@@ -1,22 +1,25 @@
 """app.audio_recorder — Audio capture with real-time RMS metering.
 
 Captures audio from the system's default microphone via sounddevice,
-OR system audio via parec (PulseAudio) when system_audio is selected.
-Saves the result to a temporary WAV file via soundfile, and computes
+OR system audio via PipeWire/PulseAudio monitor devices or parec fallback.
+Saves the result to a WAV file via soundfile, and computes
 RMS (Root Mean Square) values via numpy for the VU meter widget.
 
 Usage:
     recorder = AudioRecorder(on_rms_update=my_callback)
+    recorder.set_source("system_audio")
     recorder.start_recording()
-    # ... user speaks ...
-    wav_path = recorder.stop_recording()
+    # ... system audio is captured ...
+    wav_path = recorder.stop_recording(save_dir=Path("Vault"))
 """
 
-import io
+import os
+import shutil
 import struct
 import subprocess
 import tempfile
 import threading
+import uuid
 from pathlib import Path
 from typing import Callable
 
@@ -29,10 +32,11 @@ _SAMPLE_RATE = 16_000  # 16 kHz — ideal for speech / Whisper
 _CHANNELS = 1  # Mono
 _DTYPE = "float32"  # sounddevice native float range [-1.0, 1.0]
 _BLOCK_SIZE = 1024  # Frames per callback — controls RMS update rate
-
-# parec settings
-_PAREC_SAMPLE_RATE = 44100  # parec outputs at the sink's sample rate
-_PAREC_CHANNELS = 2  # parec outputs stereo by default
+# Only this much audio stays in RAM for streaming preview. The authoritative
+# recording is the progressive PCM file on disk.
+_PREVIEW_MAX_BLOCKS = (_SAMPLE_RATE * 10) // _BLOCK_SIZE + 1
+# Minimum free space required before a recording may start (~2h of float32 audio).
+_MIN_FREE_DISK_MB = 500
 
 
 class AudioRecorder:
@@ -40,25 +44,46 @@ class AudioRecorder:
 
     Args:
         on_rms_update: Optional callback called with a float in [0.0, 1.0]
-                       on each audio block. Safe to update UI labels from it
-                       if routed through root.after().
+                       on each audio block.
     """
+
+    # --- Dual recording constants ---
+    _MIC_WEIGHT: float = 1.0
+    _SYS_WEIGHT: float = 0.8
 
     def __init__(self, on_rms_update: Callable[[float], None] | None = None) -> None:
         self._on_rms_update = on_rms_update
+        self._capture_dir: Path | None = None
+        self._capture_id: str | None = None
+        self._pcm_files: dict[str, object] = {}
+        self._pcm_paths: dict[str, Path] = {}
         self._frames: list[np.ndarray] = []
         self._lock = threading.Lock()
         self._stream: sd.InputStream | None = None
         self._recording = False
         self._current_rms: float = 0.0
-        self._source: str = "microphone"  # "microphone" | "system_audio"
+        self._source: str = "microphone"  # "microphone" | "system_audio" | "dual"
+
+        # Dual recording state
+        self._stream_mic: sd.InputStream | None = None
+        self._stream_sys: sd.InputStream | None = None
+        self._mic_frames: list[np.ndarray] = []
+        self._sys_frames: list[np.ndarray] = []
+        self._mic_lock = threading.Lock()
+        self._sys_lock = threading.Lock()
+
         # For parec subprocess
         self._parec_process: subprocess.Popen | None = None
         self._parec_thread: threading.Thread | None = None
 
     def set_source(self, source: str) -> None:
-        """Set audio source: "microphone" (default) or "system_audio"."""
-        self._source = source
+        """Set audio source: "microphone" (default), "system_audio", or "dual"."""
+        if source in ("mic", "microphone"):
+            self._source = "microphone"
+        elif source in ("system", "system_audio"):
+            self._source = "system_audio"
+        elif source in ("dual", "both", "mic+system"):
+            self._source = "dual"
 
     # ------------------------------------------------------------------
     # Public API
@@ -73,31 +98,183 @@ class AudioRecorder:
         """Last computed RMS value in the range [0.0, 1.0]."""
         return self._current_rms
 
-    def start_recording(self) -> None:
-        """Begin capturing audio from the configured source."""
+    def start_recording(
+        self, source: str | None = None, capture_dir: Path | None = None
+    ) -> None:
+        """Begin capturing audio from the configured source.
+
+        Args:
+            source: Optional — "mic"/"microphone", "system"/"system_audio", or "dual".
+                    If provided, calls set_source() first.
+        """
         if self._recording:
             return
 
+        if source is not None:
+            self.set_source(source)
+
+        if capture_dir is not None:
+            self._open_durable_capture(capture_dir)
+
         with self._lock:
             self._frames = []
+            self._mic_frames = []
+            self._sys_frames = []
             self._recording = True
 
-        device = self._resolve_device()
-
-        if self._source == "system_audio" and device is None:
-            # No native monitor device - use parec
-            self._start_parec_recording()
+        if self._source == "dual":
+            self._start_dual_recording()
         else:
-            # Use sounddevice
-            self._stream = sd.InputStream(
-                device=device,
+            device = self._resolve_device()
+
+            if self._source == "system_audio" and device is None:
+                # No native monitor device - use parec
+                self._start_parec_recording()
+            else:
+                # Use sounddevice
+                self._stream = sd.InputStream(
+                    device=device,
+                    samplerate=_SAMPLE_RATE,
+                    channels=_CHANNELS,
+                    dtype=_DTYPE,
+                    blocksize=_BLOCK_SIZE,
+                    callback=self._audio_callback,
+                )
+                self._stream.start()
+
+    # ------------------------------------------------------------------
+    # Dual recording
+    # ------------------------------------------------------------------
+
+    def _start_dual_recording(self) -> None:
+        """Start simultaneous capture from microphone and system audio."""
+        try:
+            # Microphone stream — uses the default input device
+            self._stream_mic = sd.InputStream(
+                device=None,  # Default input
                 samplerate=_SAMPLE_RATE,
                 channels=_CHANNELS,
                 dtype=_DTYPE,
                 blocksize=_BLOCK_SIZE,
-                callback=self._audio_callback,
+                callback=self._mic_callback,
             )
-            self._stream.start()
+            self._stream_mic.start()
+
+            # System audio stream — uses PipeWire / PulseAudio monitor device
+            system_device = self._resolve_device_for_system()
+            if system_device is None:
+                # No native monitor device - use parec fallback
+                self._start_parec_recording()
+            else:
+                self._stream_sys = sd.InputStream(
+                    device=system_device,
+                    samplerate=_SAMPLE_RATE,
+                    channels=_CHANNELS,
+                    dtype=_DTYPE,
+                    blocksize=_BLOCK_SIZE,
+                    callback=self._sys_callback,
+                )
+                self._stream_sys.start()
+        except Exception as exc:
+            # Clean up streams and state on failure
+            with self._lock:
+                self._recording = False
+            if self._stream_mic:
+                try:
+                    self._stream_mic.stop()
+                    self._stream_mic.close()
+                except Exception:
+                    pass
+                self._stream_mic = None
+            if self._stream_sys:
+                try:
+                    self._stream_sys.stop()
+                    self._stream_sys.close()
+                except Exception:
+                    pass
+                self._stream_sys = None
+            if self._parec_process:
+                try:
+                    self._parec_process.terminate()
+                    self._parec_process.wait(timeout=2)
+                except Exception:
+                    pass
+                self._parec_process = None
+            if self._parec_thread:
+                self._parec_thread = None
+            raise RuntimeError(f"Falha ao iniciar streams do Modo Dual: {exc}") from exc
+
+    def _resolve_device_for_system(self) -> int | None:
+        """Resolve system audio device index (same logic as _resolve_device for system_audio)."""
+        # Step 1: Look for PipeWire/PulseAudio virtual input sources
+        for idx, info in enumerate(sd.query_devices()):
+            name = info.get("name", "").lower()
+            max_in = info.get("max_input_channels", 0)
+            max_out = info.get("max_output_channels", 0)
+            if max_in > 0 and max_out > 0:
+                continue
+            if name in ("pipewire", "pulse", "default"):
+                return idx
+
+        # Step 2: Scan ALL devices for "Monitor of" names
+        for idx, info in enumerate(sd.query_devices()):
+            name = info.get("name", "").lower()
+            if "monitor of" in name or "monitorof" in name.replace(" ", ""):
+                return idx
+
+        # Step 3: Fall back to ALSA monitor/mix device names
+        for idx, info in enumerate(sd.query_devices()):
+            name = info.get("name", "").lower()
+            if "monitor" in name or "mix" in name:
+                return idx
+
+        return None
+
+    def _mic_callback(
+        self,
+        indata: np.ndarray,
+        frames: int,
+        time,  # noqa: ANN001
+        status: sd.CallbackFlags,
+    ) -> None:
+        """Callback for the microphone stream in dual mode."""
+        if not self._recording:
+            return
+
+        chunk = indata.copy()
+        self._write_pcm("mic", chunk)
+        with self._mic_lock:
+            self._mic_frames.append(chunk)
+            if self._pcm_files and len(self._mic_frames) > _PREVIEW_MAX_BLOCKS:
+                del self._mic_frames[:-_PREVIEW_MAX_BLOCKS]
+
+        # Compute RMS from microphone — this drives the VU meter
+        rms = float(np.sqrt(np.mean(chunk**2)))
+        self._current_rms = min(rms * 3.0, 1.0)
+        if self._on_rms_update:
+            self._on_rms_update(self._current_rms)
+
+    def _sys_callback(
+        self,
+        indata: np.ndarray,
+        frames: int,
+        time,  # noqa: ANN001
+        status: sd.CallbackFlags,
+    ) -> None:
+        """Callback for the system audio stream in dual mode."""
+        if not self._recording:
+            return
+
+        chunk = indata.copy()
+        self._write_pcm("system", chunk)
+        with self._sys_lock:
+            self._sys_frames.append(chunk)
+            if self._pcm_files and len(self._sys_frames) > _PREVIEW_MAX_BLOCKS:
+                del self._sys_frames[:-_PREVIEW_MAX_BLOCKS]
+
+    # ------------------------------------------------------------------
+    # Parec fallback
+    # ------------------------------------------------------------------
 
     def _start_parec_recording(self) -> None:
         """Start system audio capture using parec (PulseAudio)."""
@@ -109,8 +286,8 @@ class AudioRecorder:
             cmd = [
                 "parec",
                 "-d", monitor_name,
-                "--rate", str(_PAREC_SAMPLE_RATE),
-                "--channels", str(_PAREC_CHANNELS),
+                "--rate", str(_SAMPLE_RATE),
+                "--channels", str(_CHANNELS),
                 "--format", "s16le",
             ]
 
@@ -130,18 +307,24 @@ class AudioRecorder:
 
         except FileNotFoundError:
             self._recording = False
-            raise RuntimeError("parec not found. Install pulseaudio-utils package.")
-        except Exception as e:
+            raise RuntimeError(
+                "parec not found. Install pulseaudio-utils package."
+            )
+        except Exception:
             self._recording = False
             raise
 
     def _parec_reader(self) -> None:
         """Read audio data from parec subprocess in a background thread."""
-        bytes_per_frame = _PAREC_CHANNELS * 2  # 2 bytes per sample (s16le)
+        bytes_per_frame = _CHANNELS * 2  # 1 channel * 2 bytes/sample (s16le)
         target_bytes = _BLOCK_SIZE * bytes_per_frame
 
         try:
-            while self._recording and self._parec_process and self._parec_process.poll() is None:
+            while (
+                self._recording
+                and self._parec_process
+                and self._parec_process.poll() is None
+            ):
                 # Read raw bytes from parec
                 raw = self._parec_process.stdout.read(target_bytes)
                 if not raw:
@@ -153,38 +336,29 @@ class AudioRecorder:
                 # Convert to numpy array
                 audio_data = np.array(samples, dtype=np.float32) / 32768.0
 
-                # If stereo, mix down to mono (average channels)
-                if _PAREC_CHANNELS == 2:
-                    audio_data = audio_data.reshape(-1, 2)
-                    audio_data = np.mean(audio_data, axis=1)
+                if self._source == "dual":
+                    self._write_pcm("system", audio_data)
+                    # Store in system frames for dual mode
+                    with self._sys_lock:
+                        self._sys_frames.append(audio_data.astype(np.float32))
+                        if self._pcm_files and len(self._sys_frames) > _PREVIEW_MAX_BLOCKS:
+                            del self._sys_frames[:-_PREVIEW_MAX_BLOCKS]
+                else:
+                    # Compute RMS for VU meter
+                    rms = float(np.sqrt(np.mean(audio_data**2)))
+                    self._current_rms = min(rms * 3.0, 1.0)
+                    if self._on_rms_update:
+                        self._on_rms_update(self._current_rms)
 
-                # Resample from _PAREC_SAMPLE_RATE to _SAMPLE_RATE
-                if _PAREC_SAMPLE_RATE != _SAMPLE_RATE:
-                    audio_data = self._resample(audio_data, _PAREC_SAMPLE_RATE, _SAMPLE_RATE)
-
-                # Compute RMS for VU meter
-                rms = float(np.sqrt(np.mean(audio_data**2)))
-                self._current_rms = min(rms * 3.0, 1.0)
-                if self._on_rms_update:
-                    self._on_rms_update(self._current_rms)
-
-                # Store frame
-                with self._lock:
-                    self._frames.append(audio_data.astype(np.float32))
+                    # Persist before retaining the preview buffer in memory.
+                    self._write_pcm("single", audio_data)
+                    with self._lock:
+                        self._frames.append(audio_data.astype(np.float32))
+                        if self._pcm_files and len(self._frames) > _PREVIEW_MAX_BLOCKS:
+                            del self._frames[:-_PREVIEW_MAX_BLOCKS]
 
         except Exception:
             pass
-
-    def _resample(self, data: np.ndarray, from_rate: int, to_rate: int) -> np.ndarray:
-        """Simple linear resampling."""
-        if from_rate == to_rate:
-            return data
-
-        ratio = to_rate / from_rate
-        new_length = int(len(data) * ratio)
-        indices = np.linspace(0, len(data) - 1, new_length)
-        resampled = np.interp(indices, np.arange(len(data)), data)
-        return resampled.astype(np.float32)
 
     def _get_default_sink_name(self) -> str | None:
         """Get the default sink name using pactl."""
@@ -241,57 +415,321 @@ class AudioRecorder:
             # No native monitor found - will use parec fallback
         return None
 
-    def stop_recording(self) -> Path:
-        """Stop capture and save audio to a temporary WAV file.
+    def discard_recording(self) -> None:
+        """Stop recording and discard all captured audio. No WAV is saved.
 
-        Returns:
-            Path to the saved .wav file (caller is responsible for cleanup).
+        Unlike stop_recording(), this does NOT write any file to disk.
+        Use this when the user cancels a recording.
         """
         if not self._recording:
-            raise RuntimeError("AudioRecorder: not currently recording.")
+            return
 
         self._recording = False
 
-        # Stop sounddevice stream if active
-        if self._stream:
-            self._stream.stop()
-            self._stream.close()
-            self._stream = None
+        # Stop dual streams if active
+        if self._source == "dual":
+            if self._stream_mic:
+                self._stream_mic.stop()
+                self._stream_mic.close()
+                self._stream_mic = None
 
-        # Stop parec process if active
-        if self._parec_process:
-            self._parec_process.terminate()
-            try:
-                self._parec_process.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                self._parec_process.kill()
-            self._parec_process = None
+            if self._stream_sys:
+                self._stream_sys.stop()
+                self._stream_sys.close()
+                self._stream_sys = None
 
-        if self._parec_thread:
-            self._parec_thread.join(timeout=2)
-            self._parec_thread = None
+            if self._parec_process:
+                self._parec_process.terminate()
+                try:
+                    self._parec_process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    self._parec_process.kill()
+                self._parec_process = None
+
+            if self._parec_thread:
+                self._parec_thread.join(timeout=2)
+                self._parec_thread = None
+
+            with self._mic_lock:
+                self._mic_frames = []
+            with self._sys_lock:
+                self._sys_frames = []
+        else:
+            # Stop sounddevice stream if active
+            if self._stream:
+                self._stream.stop()
+                self._stream.close()
+                self._stream = None
+
+            # Stop parec process if active
+            if self._parec_process:
+                self._parec_process.terminate()
+                try:
+                    self._parec_process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    self._parec_process.kill()
+                self._parec_process = None
+
+            if self._parec_thread:
+                self._parec_thread.join(timeout=2)
+                self._parec_thread = None
+
+            # Clear frames without saving
+            with self._lock:
+                self._frames = []
+
+        self._close_pcm()
+        # User explicitly discarded: remove progressive recovery files too.
+        for path in self._pcm_paths.values():
+            path.unlink(missing_ok=True)
+        self._pcm_paths = {}
 
         # Reset meter to silence
         self._current_rms = 0.0
         if self._on_rms_update:
             self._on_rms_update(0.0)
 
-        with self._lock:
-            frames = list(self._frames)
+    def stop_recording(self, save_dir: Path | None = None) -> tuple[Path, Path] | Path:
+        """Stop capture and save audio files.
 
-        if not frames:
-            raise RuntimeError("AudioRecorder: no audio captured.")
+        For dual mode: returns tuple of (mic_path, sys_path)
+        For other modes: returns single Path (backward compatible)
 
-        audio_data = np.concatenate(frames, axis=0)
+        Args:
+            save_dir: Optional directory to save the WAV file(s). If None, uses
+                      temporary files.
 
-        tmp = tempfile.NamedTemporaryFile(
-            suffix=".wav", delete=False, prefix="transcribe_"
-        )
-        tmp.close()
-        wav_path = Path(tmp.name)
+        Returns:
+            For dual mode: tuple[Path, Path] — (mic_path, sys_path)
+            For other modes: Path to the saved .wav file
+        """
+        if not self._recording:
+            raise RuntimeError("AudioRecorder: not currently recording.")
 
-        sf.write(str(wav_path), audio_data, _SAMPLE_RATE)
-        return wav_path
+        self._recording = False
+
+        # Stop dual streams if active
+        if self._source == "dual":
+            if self._stream_mic:
+                self._stream_mic.stop()
+                self._stream_mic.close()
+                self._stream_mic = None
+
+            if self._stream_sys:
+                self._stream_sys.stop()
+                self._stream_sys.close()
+                self._stream_sys = None
+
+            if self._parec_process:
+                self._parec_process.terminate()
+                try:
+                    self._parec_process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    self._parec_process.kill()
+                self._parec_process = None
+
+            if self._parec_thread:
+                self._parec_thread.join(timeout=2)
+                self._parec_thread = None
+        else:
+            # Stop sounddevice stream if active
+            if self._stream:
+                self._stream.stop()
+                self._stream.close()
+                self._stream = None
+
+            # Stop parec process if active
+            if self._parec_process:
+                self._parec_process.terminate()
+                try:
+                    self._parec_process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    self._parec_process.kill()
+                self._parec_process = None
+
+            if self._parec_thread:
+                self._parec_thread.join(timeout=2)
+                self._parec_thread = None
+
+        # Reset meter to silence
+        self._current_rms = 0.0
+        if self._on_rms_update:
+            self._on_rms_update(0.0)
+
+        # Finalize progressive crash-safe sinks first. This is the authoritative
+        # audio; RAM frames remain only for compatibility/streaming preview.
+        if self._pcm_paths:
+            self._close_pcm()
+            output_dir = save_dir or self._capture_dir or Path(tempfile.gettempdir())
+            output_dir.mkdir(parents=True, exist_ok=True)
+            results: dict[str, Path] = {}
+            for name, pcm_path in self._pcm_paths.items():
+                wav_path = output_dir / f"session_{self._capture_id}_{name}.wav"
+                if not self.pcm_part_to_wav(pcm_path, wav_path):
+                    raise RuntimeError(f"AudioRecorder: failed to finalize {name} audio")
+                pcm_path.unlink(missing_ok=True)
+                results[name] = wav_path
+            self._pcm_paths = {}
+            if self._source == "dual":
+                return results["mic"], results["system"]
+            return results["single"]
+
+        # Legacy in-memory finalization (callers that did not request durable capture).
+        if self._source == "dual":
+            with self._mic_lock:
+                mic_frames = list(self._mic_frames)
+            with self._sys_lock:
+                sys_frames = list(self._sys_frames)
+
+            mic_audio = np.concatenate(mic_frames, axis=0) if mic_frames else np.array([])
+            sys_audio = np.concatenate(sys_frames, axis=0) if sys_frames else np.array([])
+
+            if len(mic_audio) == 0 or len(sys_audio) == 0:
+                raise RuntimeError("AudioRecorder: no audio captured.")
+
+            import uuid
+
+            session_id = uuid.uuid4().hex[:12]
+
+            if save_dir is not None:
+                save_dir.mkdir(parents=True, exist_ok=True)
+                mic_path = save_dir / f"session_{session_id}_mic.wav"
+                sys_path = save_dir / f"session_{session_id}_sys.wav"
+            else:
+                tmp_mic = tempfile.NamedTemporaryFile(
+                    delete=False, suffix=f"_mic_{session_id}.wav"
+                )
+                tmp_sys = tempfile.NamedTemporaryFile(
+                    delete=False, suffix=f"_sys_{session_id}.wav"
+                )
+                tmp_mic.close()
+                tmp_sys.close()
+                mic_path = Path(tmp_mic.name)
+                sys_path = Path(tmp_sys.name)
+
+            sf.write(str(mic_path), mic_audio, _SAMPLE_RATE)
+            sf.write(str(sys_path), sys_audio, _SAMPLE_RATE)
+
+            return (mic_path, sys_path)
+        else:
+            with self._lock:
+                frames = list(self._frames)
+
+            if not frames:
+                raise RuntimeError("AudioRecorder: no audio captured.")
+
+            audio_data = np.concatenate(frames, axis=0)
+
+            if save_dir is not None:
+                save_dir.mkdir(parents=True, exist_ok=True)
+                import uuid
+
+                wav_name = f"transcribe_{uuid.uuid4().hex[:12]}.wav"
+                wav_path = save_dir / wav_name
+            else:
+                tmp = tempfile.NamedTemporaryFile(
+                    suffix=".wav", delete=False, prefix="transcribe_"
+                )
+                tmp.close()
+                wav_path = Path(tmp.name)
+
+            sf.write(str(wav_path), audio_data, _SAMPLE_RATE)
+            return wav_path
+
+    # ------------------------------------------------------------------
+    # Durable capture (progressive PCM sink)
+    # ------------------------------------------------------------------
+
+    def _open_durable_capture(self, capture_dir: Path) -> None:
+        """Open .pcm.part files so audio survives a crash mid-recording."""
+        self._capture_dir = capture_dir
+        self._capture_id = uuid.uuid4().hex[:12]
+        capture_dir.mkdir(parents=True, exist_ok=True)
+
+        # Refuse to start rather than truncate a recording mid-session.
+        free_mb = shutil.disk_usage(capture_dir).free / (1024 * 1024)
+        if free_mb < _MIN_FREE_DISK_MB:
+            raise RuntimeError(
+                f"Espaço em disco insuficiente para gravar: {free_mb:.0f} MB livres "
+                f"(mínimo {_MIN_FREE_DISK_MB} MB)."
+            )
+        suffix = "mic" if self._source == "dual" else "single"
+        names = ["mic", "system"] if self._source == "dual" else ["single"]
+        for name in names:
+            path = capture_dir / f"{self._capture_id}_{name}.pcm.part"
+            self._pcm_files[name] = open(path, "wb", buffering=1024 * 1024)
+            self._pcm_paths[name] = path
+
+    def _write_pcm(self, name: str, chunk: np.ndarray) -> None:
+        """Append a float32 block to the capture sink. Best-effort per block."""
+        f = self._pcm_files.get(name)
+        if f is None:
+            return
+        try:
+            f.write(chunk.astype(np.float32, copy=False).tobytes())
+        except Exception:
+            # A failing sink must never kill the audio callback thread.
+            pass
+
+    def _flush_pcm(self, fsync: bool = True) -> None:
+        for f in self._pcm_files.values():
+            try:
+                f.flush()
+                if fsync:
+                    os.fsync(f.fileno())
+            except Exception:
+                pass
+
+    def _close_pcm(self) -> None:
+        self._flush_pcm()
+        for f in self._pcm_files.values():
+            try:
+                f.close()
+            except Exception:
+                pass
+        self._pcm_files = {}
+
+    @staticmethod
+    def pcm_part_to_wav(pcm_path: Path, wav_path: Path) -> bool:
+        """Convert a float32 raw PCM .part into a playable WAV. Returns success."""
+        import numpy as _np
+
+        try:
+            samples = _np.fromfile(str(pcm_path), dtype=_np.float32)
+            if samples.size == 0:
+                return False
+            # Drop a torn tail block (< 1 full sample is impossible; parity is fine).
+            sf.write(str(wav_path), samples, _SAMPLE_RATE)
+            return True
+        except Exception:
+            return False
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    @property
+    def capture_paths(self) -> dict[str, Path]:
+        """Paths of the progressive PCM sinks for the active capture."""
+        return dict(self._pcm_paths)
+
+    def recover_pcm_parts(pending_dir: Path, logger=None) -> list[Path]:
+        """Convert orphaned .pcm.part files into playable WAVs (crash recovery)."""
+        recovered: list[Path] = []
+        for part in sorted(pending_dir.glob("*.pcm.part")):
+            stem = part.name[: -len(".pcm.part")]
+            wav = pending_dir / f"{stem}.wav"
+            if wav.exists():
+                part.unlink(missing_ok=True)
+                continue
+            if AudioRecorder.pcm_part_to_wav(part, wav):
+                part.unlink(missing_ok=True)
+                recovered.append(wav)
+                if logger:
+                    logger("Recovered audio from crash: %s", wav.name)
+            elif part.stat().st_size < 16000 * 4:  # < 1s of audio — discardable
+                part.unlink(missing_ok=True)
+        return recovered
 
     # ------------------------------------------------------------------
     # Internal
@@ -309,9 +747,12 @@ class AudioRecorder:
             return
 
         chunk = indata.copy()
+        self._write_pcm("single", chunk)
 
         with self._lock:
             self._frames.append(chunk)
+            if self._pcm_files and len(self._frames) > _PREVIEW_MAX_BLOCKS:
+                del self._frames[:-_PREVIEW_MAX_BLOCKS]
 
         # Compute RMS and normalize to [0.0, 1.0]
         rms = float(np.sqrt(np.mean(chunk**2)))

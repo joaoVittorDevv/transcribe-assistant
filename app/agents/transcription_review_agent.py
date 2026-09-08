@@ -1,8 +1,12 @@
-"""app/agents/transcription_review_agent.py - Agno-powered transcription review agent.
+"""app/agents/transcription_review_agent.py - Direct Groq API transcription review agent.
 
-Transcription review agent using the Agno framework with Groq model.
+Transcription review using direct Groq Chat Completions API (no Agno middleware).
 Corrects grammar, applies punctuation, and formats technical terms preserving
 100% of spoken content.
+
+Bug fix (Phase 2): Replaced Agno Agent framework with direct Groq API call
+to prevent conversational context injection. Added output filter to strip
+any remaining chat-like prefixes/suffixes.
 """
 
 from __future__ import annotations
@@ -11,11 +15,9 @@ import re
 import difflib
 from dataclasses import dataclass, field
 
-from agno.agent import Agent
-from agno.models.groq import Groq
+from groq import Groq
 
 from app.config import GROQ_API_KEY, GROQ_REVIEW_MODEL
-from app.database import get_keywords_by_prompt
 
 
 # ---------------------------------------------------------------------------
@@ -51,17 +53,83 @@ SYSTEM_PROMPT = (
     "'traco'->'-', 'barra'->'/', 'aspas'->'\"'"
 )
 
-EXPECTED_OUTPUT = (
-    "Retorne APENAS o texto corrigido - texto plano, sem aspas, sem comentarios, "
-    "sem notas, sem titulos, sem separadores. Exatamente como este exemplo:\n\n"
-    "Alo, alo, testando, o audio esta funcionando corretamente.\n\n"
-    "Nada mais alem do texto corrigido."
-)
+# ---------------------------------------------------------------------------
+# Output filter — strips chat-like prefixes/suffixes from LLM responses
+# ---------------------------------------------------------------------------
+
+# Patterns that match conversational prefixes the LLM may prepend
+_CONVERSATIONAL_PREFIXES = [
+    # Portuguese
+    r"^Aqui está (?:a|o) (?:texto )?(?:corrigid[ao]|revisad[ao]|transcri[cç][aã]o)[:]\s*",
+    r"^Segue (?:abaixo )?(?:a|o) (?:texto )?(?:corrigid[ao]|revisad[ao]|transcri[cç][aã]o)[:]\s*",
+    r"^Claro[!,.]?\s*(?:aqui está)?[:]?\s*",
+    r"^Com certeza[!,.]?\s*[:]?\s*",
+    r"^Transcri[cç][aã]o(?: corrigida| revisada)?[:]\s*",
+    r"^Texto (?:corrigido|revisado)[:]\s*",
+    r"^O texto (?:corrigido|revisado) (?:ficou|ficaria|é)[:]\s*",
+    r"^O resultado (?:da revisão|final) (?:é|ficou)[:]\s*",
+    r"^Corre[cç][aã]o[:]\s*",
+    r"^Revis[aã]o[:]\s*",
+    r"^Resposta[:]\s*",
+    # English (model may respond in English despite Portuguese prompt)
+    r"^Here is the (?:corrected|reviewed) (?:text|transcription)[:]\s*",
+    r"^Sure[!,.]?\s*(?:here(?:'s| you go))?[:]?\s*",
+    r"^Of course[!,.]?\s*[:]?\s*",
+    r"^The (?:corrected|reviewed) (?:text|transcription)(?: is)?[:]\s*",
+]
+
+# Patterns for conversational suffixes
+_CONVERSATIONAL_SUFFIXES = [
+    r"\n*(?:Espero que|I hope).*(?:ajude|help).*[.!]?\s*$",
+    r"\n*Let me know if.*$",
+    r"\n*(?:Qualquer|Any|Se).*(?:d[uú]vida|question|precisar).*$",
+]
+
+# Boundary markers the LLM may wrap the text in
+_STRIP_MARKERS = [
+    ('"', '"'),
+    ("'", "'"),
+    ("'''", "'''"),
+    ('"""', '"""'),
+    ("```", "```"),
+]
+
+
+def _filter_output(text: str) -> str:
+    """Strip conversational prefixes, suffixes, and wrapping from LLM output.
+
+    This is a safety net — the system prompt should prevent these, but if
+    the model still responds conversationally, we strip it here rather than
+    showing chat text to the user.
+    """
+    if not text:
+        return text
+
+    cleaned = text.strip()
+
+    # Strip known conversational prefixes (most specific first)
+    for pattern in _CONVERSATIONAL_PREFIXES:
+        cleaned = re.sub(pattern, "", cleaned, count=1, flags=re.IGNORECASE).strip()
+
+    # Strip known conversational suffixes
+    for pattern in _CONVERSATIONAL_SUFFIXES:
+        cleaned = re.sub(pattern, "", cleaned, count=1, flags=re.IGNORECASE).strip()
+
+    # Strip wrapping quotes/code fences
+    for open_marker, close_marker in _STRIP_MARKERS:
+        if cleaned.startswith(open_marker) and cleaned.endswith(close_marker):
+            inner = cleaned[len(open_marker):-len(close_marker) or None].strip()
+            # Only strip if inner text is non-empty and the markers are real wrappers
+            if inner and open_marker not in inner and close_marker not in inner:
+                cleaned = inner
+
+    return cleaned
 
 
 # ---------------------------------------------------------------------------
 # Result dataclass - same interface as legacy for compatibility
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class ReviewResult:
@@ -75,17 +143,16 @@ class ReviewResult:
 # Agent
 # ---------------------------------------------------------------------------
 
+
 class TranscriptionReviewAgent:
-    """Agno-based transcription review agent using Groq."""
+    """Transcription review using direct Groq Chat Completions API.
+
+    Uses direct API call (no Agno framework) to prevent conversational
+    context injection. Includes output filter as safety net.
+    """
 
     def __init__(self) -> None:
-        self._agent = Agent(
-            model=Groq(id=GROQ_REVIEW_MODEL, api_key=GROQ_API_KEY),
-            instructions=SYSTEM_PROMPT,
-            expected_output=EXPECTED_OUTPUT,
-            markdown=False,
-            add_datetime_to_context=False,
-        )
+        self._client = Groq(api_key=GROQ_API_KEY)
 
     # ------------------------------------------------------------------
     # Public API
@@ -105,7 +172,6 @@ class TranscriptionReviewAgent:
             Raw transcription to review.
         keywords:
             List of known terms (used for near-match flagging).
-            Ignored - system prompt is fixed (never from DB).
         prompt_text:
             Accepted but ignored. System prompt is fixed and hardcoded.
 
@@ -117,18 +183,36 @@ class TranscriptionReviewAgent:
         # Build user message with glossary
         glossary_str = ", ".join(keywords) if keywords else "Nenhum"
         user_message = (
-            "GLOSSARIO DE TERMOS: " + glossary_str + "\n\n"
-            "TEXTO BRUTO PARA REVISAR:\n" + transcribed_text
+            "GLOSSARIO DE TERMOS: "
+            + glossary_str
+            + "\n\n"
+            "TEXTO BRUTO PARA REVISAR:\n"
+            + transcribed_text
         )
 
-        # Run agent and get response
+        # Run via direct Groq Chat Completions API (no Agno middleware)
         try:
-            response = self._agent.run(user_message)
-            corrected = response.content if response.content else transcribed_text
+            response = self._client.chat.completions.create(
+                model=GROQ_REVIEW_MODEL,
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": user_message},
+                ],
+                temperature=0.0,
+            )
+            raw_output = response.choices[0].message.content or ""
+            # Apply output filter to strip any chat-like artifacts
+            corrected = _filter_output(raw_output)
+            if not corrected:
+                corrected = transcribed_text
         except Exception as exc:
             # Graceful degradation: if review fails, return raw transcription
             import sys
-            print(f"[DEBUG] TranscriptionReviewAgent failed ({exc}), usando texto bruto.", file=sys.stderr)
+
+            print(
+                f"[DEBUG] TranscriptionReviewAgent failed ({exc}), usando texto bruto.",
+                file=sys.stderr,
+            )
             corrected = transcribed_text
 
         # Compute near-matches and diff
