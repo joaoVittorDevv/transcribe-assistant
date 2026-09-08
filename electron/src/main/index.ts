@@ -16,6 +16,13 @@ if (process.env.TRANSCRIBE_DISABLE_GPU !== '0') {
 const __filename = url.fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+function getBackendCwd(): string {
+  if (app.isPackaged) {
+    return process.resourcesPath;
+  }
+  return path.resolve(__dirname, '../../..');
+}
+
 // ---------------------------------------------------------------------------
 // Server subprocess
 // ---------------------------------------------------------------------------
@@ -23,7 +30,7 @@ let server: ChildProcess | null = null;
 
 function startServer(): void {
   server = spawn('uv', ['run', 'python', '-m', 'app.server'], {
-    cwd: path.resolve(__dirname, '../../../..'),
+    cwd: getBackendCwd(),
     stdio: 'pipe',
     detached: true,
   });
@@ -73,7 +80,7 @@ let isQuitting = false;
 
 function getTrayIconPath(state: 'idle' | 'recording' | 'transcribing' | 'error'): string {
   const iconName = `tray_${state}.png`;
-  const devPath = path.resolve(__dirname, '../../../../electron/assets', iconName);
+  const devPath = path.resolve(__dirname, '../../../electron/assets', iconName);
   const prodPath = path.join(process.resourcesPath, 'assets', iconName);
   
   if (app.isPackaged) {
@@ -211,7 +218,7 @@ function startAudioEngine(): void {
   if (audioEngine) return;
   engineRestarting = false;
   audioEngine = spawn('uv', ['run', 'python', 'app/audio_engine.py'], {
-    cwd: path.resolve(__dirname, '../../../..'),
+    cwd: getBackendCwd(),
     stdio: ['pipe', 'pipe', 'pipe'],
     detached: false,
   });
@@ -391,7 +398,7 @@ function setupIpcHandlers(): void {
 function createWindow(): void {
   const iconPath = app.isPackaged
     ? path.join(process.resourcesPath, 'assets/icon.png')
-    : path.resolve(__dirname, '../../../../assets/assist_transcribe_1x1.png');
+    : path.resolve(__dirname, '../../../assets/assist_transcribe_1x1.png');
 
   mainWindow = new BrowserWindow({
     width: 1280,
